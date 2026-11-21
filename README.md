@@ -6,8 +6,9 @@ Point it at **any** rdio-scanner server, enter the access code if that server us
 
 ![Platform: Windows](https://img.shields.io/badge/platform-Windows-blue) ![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri%202-orange)
 
-<img width="722" height="575" alt="2026-11-21 08_45_15-Greenshot" src="https://github.com/user-attachments/assets/ae9adbf4-8cec-475e-979a-592107681ee3" />
+<img width="722" height="569" alt="2026-11-21 08_45_51-Greenshot" src="https://github.com/user-attachments/assets/e921151f-3e56-4321-bd25-b2f2670d2790" />
 
+<img width="720" height="569" alt="2026-11-21 08_43_24-Rdio Sherlock" src="https://github.com/user-attachments/assets/704a3190-fefa-433a-b23b-1b80d810a270" />
 
 
 
