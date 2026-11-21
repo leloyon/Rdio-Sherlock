@@ -6,6 +6,14 @@ Point it at **any** rdio-scanner server, enter the access code if that server us
 
 ![Platform: Windows](https://img.shields.io/badge/platform-Windows-blue) ![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri%202-orange)
 
+<img width="726" height="748" alt="2026-11-21 08_28_57-Rdio Sherlock" src="https://github.com/user-attachments/assets/c1fa9126-4b82-4ea8-823f-e00d371ee949" />
+
+<img width="1920" height="1041" alt="2026-11-21 08_28_39-Rdio Sherlock" src="https://github.com/user-attachments/assets/f1536ff3-184e-4434-b464-fbffe2d3f8f6" />
+
+<img width="169" height="157" alt="2026-11-21 08_34_16-" src="https://github.com/user-attachments/assets/677c51ac-2336-4d6c-8c1c-8036c3990af1" />
+
+
+
 ## Features
 
 - **Bring your own server** — a setup screen takes any rdio-scanner server address plus an optional access code, and remembers it per machine
@@ -23,9 +31,13 @@ Point it at **any** rdio-scanner server, enter the access code if that server us
 1. Download or build `Rdio Sherlock` (a single portable `.exe`, nothing to install)
 2. Run it and enter your rdio-scanner server address, e.g. `http://192.168.1.10:3000` or `https://scanner.example.com`
 3. If the server asks for an access code, enter it — it's handed to the scanner page the same way the web client stores it, so you won't be prompted again
-4. Click **Connect**. Done — close the window and it keeps playing from the tray
+4. Click **Connect**. Done — close the window and it keeps playing from the system tray. 
 
-To point it at a different server later, use **Change server…** from the tray menu or by right-clicking anywhere in the app.
+To point it at a different server later, use **Change server…** from the tray menu or by right-clicking anywhere in the app. You can also "start at login/boot" and "mute" by right-clicking the icon in the system tray. Right-clicking the main window will allow you to also change your server, or set the window to always be on-top.
+
+Drag/resize to your liking. Double-clicking the main display in rdio-scanner will fullscreen the application. Double-clicking the top near the -/X buttons will maximize the window.
+
+This application uses the same layout as a typical rdio-scanner server would if you typed it into the web browser. Be sure to check out my Rdio-Scanner fork for some themes, statistics page, and various QoL Features. - [here](https://github.com/leloyon/rdio-scanner).
 
 ### A note on sleep
 
