@@ -8,7 +8,7 @@ Point it at **any** rdio-scanner server, enter the access code if that server us
 
 <img width="726" height="748" alt="2026-11-21 08_28_57-Rdio Sherlock" src="https://github.com/user-attachments/assets/c1fa9126-4b82-4ea8-823f-e00d371ee949" />
 
-<img width="1920" height="748" alt="2026-11-21 08_28_39-Rdio Sherlock" src="https://github.com/user-attachments/assets/f1536ff3-184e-4434-b464-fbffe2d3f8f6" />
+<img width="720" height="746" alt="2026-11-21 08_43_24-Rdio Sherlock" src="https://github.com/user-attachments/assets/23a2198b-e03d-45af-a01f-06d9b806df10" />
 
 <img width="169" height="157" alt="2026-11-21 08_34_16-" src="https://github.com/user-attachments/assets/677c51ac-2336-4d6c-8c1c-8036c3990af1" />
 
