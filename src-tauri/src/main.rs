@@ -1086,6 +1086,10 @@ const INIT_SCRIPT: &str = r##"(function () {
     var disp = document.querySelector('.rdio-display');
     if (!disp) return null;
     if ((disp.textContent || '').indexOf('NO LINK') !== -1) return BASE_TITLE + ' (no link)';
+    // The display keeps showing the last talkgroup after a call ends; the LED
+    // is only lit while a call is actually playing.
+    var ledEl = document.querySelector('.rdio-status .led');
+    if (ledEl && !ledEl.classList.contains('on')) return BASE_TITLE;
     var big = disp.querySelector('.row.big span');
     var name = big ? (big.textContent || '').trim() : '';
     if (!name || /^rdio scanner/i.test(name)) return BASE_TITLE;
