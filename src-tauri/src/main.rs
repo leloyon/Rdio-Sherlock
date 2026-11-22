@@ -58,6 +58,117 @@ const PIN_SEED_SCRIPT: &str = r##"(function () {
   } catch (e) {}
 })();"##;
 
+/// Audio output selection (Bluetooth speaker etc.). Runs before the page's own
+/// scripts: tracks every AudioContext the scanner creates so the chosen output
+/// device can be applied with setSinkId, and exposes window.__rdioPickAudio()
+/// which the right-click menu opens. The choice is remembered per server.
+const AUDIO_SCRIPT: &str = r##"(function () {
+  if (window.__rdioAudio) return;
+  window.__rdioAudio = true;
+  var KEY = 'rdio-sherlock-audio-sink';
+  var contexts = [];
+  function saved() { try { return localStorage.getItem(KEY) || ''; } catch (e) { return ''; } }
+  function applyCtx(c) {
+    var id = saved();
+    try { if (c.setSinkId) { var p = c.setSinkId(id); if (p && p.catch) p.catch(function () {}); } } catch (e) {}
+  }
+  function applyEl(el) {
+    var id = saved();
+    try { if (el.setSinkId) { var p = el.setSinkId(id); if (p && p.catch) p.catch(function () {}); } } catch (e) {}
+  }
+  function wrap(name) {
+    var Orig = window[name];
+    if (!Orig) return;
+    var Wrapped = function (opts) {
+      var c = new Orig(opts);
+      contexts.push(c);
+      applyCtx(c);
+      return c;
+    };
+    Wrapped.prototype = Orig.prototype;
+    window[name] = Wrapped;
+  }
+  wrap('AudioContext');
+  if (window.webkitAudioContext && window.webkitAudioContext !== window.AudioContext) wrap('webkitAudioContext');
+  function applyAll() {
+    contexts.forEach(applyCtx);
+    document.querySelectorAll('audio,video').forEach(applyEl);
+  }
+  var panel = null;
+  function closePanel() { if (panel) { panel.remove(); panel = null; } }
+  function row(label, active, onClick) {
+    var el = document.createElement('div');
+    el.textContent = (active ? '✓ ' : '') + label;
+    el.style.cssText = 'padding:8px 12px;font-size:13px;color:#f2f2f2;border-radius:5px;cursor:pointer;user-select:none;';
+    el.addEventListener('mouseenter', function () { el.style.background = 'rgba(255,255,255,0.10)'; });
+    el.addEventListener('mouseleave', function () { el.style.background = 'transparent'; });
+    el.addEventListener('click', onClick);
+    return el;
+  }
+  function note(text) {
+    var el = document.createElement('div');
+    el.textContent = text;
+    el.style.cssText = 'padding:8px 12px;font-size:12px;color:#aab;max-width:300px;';
+    return el;
+  }
+  function show(devices, msg) {
+    closePanel();
+    panel = document.createElement('div');
+    panel.style.cssText = 'position:fixed;z-index:2147483647;left:50%;top:60px;transform:translateX(-50%);background:#1e1e24;border:1px solid rgba(255,255,255,0.16);border-radius:8px;padding:6px;min-width:260px;max-height:70vh;overflow:auto;box-shadow:0 10px 28px rgba(0,0,0,0.5);font-family:-apple-system,"Segoe UI",Roboto,sans-serif;';
+    var h = document.createElement('div');
+    h.textContent = 'Audio output';
+    h.style.cssText = 'padding:6px 12px;font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:#aab;';
+    panel.appendChild(h);
+    var cur = saved();
+    panel.appendChild(row('System default', cur === '', function () { choose(''); }));
+    var named = false;
+    devices.forEach(function (d) {
+      if (d.deviceId === 'default' || d.deviceId === 'communications') return;
+      if (d.label) named = true;
+      panel.appendChild(row(d.label || 'Audio device', cur === d.deviceId, function () { choose(d.deviceId); }));
+    });
+    if (!named && devices.length) {
+      panel.appendChild(row('Show device names…', false, function () {
+        navigator.mediaDevices.getUserMedia({ audio: true }).then(function (st) {
+          st.getTracks().forEach(function (t) { t.stop(); });
+          list();
+        }, function () { show(devices, 'Permission was not given, so names are hidden.'); });
+      }));
+    }
+    if (msg) panel.appendChild(note(msg));
+    panel.appendChild(row('Close', false, closePanel));
+    document.body.appendChild(panel);
+  }
+  function choose(id) {
+    try { if (id) localStorage.setItem(KEY, id); else localStorage.removeItem(KEY); } catch (e) {}
+    applyAll();
+    closePanel();
+  }
+  function list() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
+      show([], 'Audio output selection is not available on this page yet. If this server address is new, restart the app once.');
+      return;
+    }
+    navigator.mediaDevices.enumerateDevices().then(function (all) {
+      show(all.filter(function (d) { return d.kind === 'audiooutput'; }));
+    }, function () { show([], 'Could not list audio devices.'); });
+  }
+  window.__rdioPickAudio = list;
+  document.addEventListener('mousedown', function (e) {
+    if (panel && !panel.contains(e.target)) closePanel();
+  }, true);
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closePanel(); });
+  try {
+    new MutationObserver(function (muts) {
+      muts.forEach(function (m) { m.addedNodes.forEach(function (n) {
+        if (n.nodeType !== 1) return;
+        if (n.tagName === 'AUDIO' || n.tagName === 'VIDEO') applyEl(n);
+        else if (n.querySelectorAll) n.querySelectorAll('audio,video').forEach(applyEl);
+      }); });
+    }).observe(document.documentElement, { childList: true, subtree: true });
+  } catch (e) {}
+})();"##;
+
 /// Injected into the main window's page: a 28px strip across the top (the
 /// drag handle, via data-tauri-drag-region; minimize/close buttons at the
 /// right).
@@ -278,7 +389,7 @@ const INIT_SCRIPT: &str = r##"(function () {
     ctxMenu = document.createElement('div');
     ctxMenu.style.cssText = 'position:fixed;z-index:2147483647;background:#1e1e24;border:1px solid rgba(255,255,255,0.16);border-radius:8px;padding:4px;min-width:170px;box-shadow:0 10px 28px rgba(0,0,0,0.5);font-family:-apple-system,"Segoe UI",Roboto,sans-serif;';
     ctxMenu.style.left = Math.min(e.clientX, window.innerWidth - 190) + 'px';
-    ctxMenu.style.top = Math.min(e.clientY, window.innerHeight - 110) + 'px';
+    ctxMenu.style.top = Math.min(e.clientY, window.innerHeight - 150) + 'px';
     ctxMenu.appendChild(mkCtxItem('Change server…', function () {
       window.location.href = 'http://tauri.localhost/index.html#edit';
     }));
@@ -290,6 +401,9 @@ const INIT_SCRIPT: &str = r##"(function () {
         var p = a.getCurrentWindow().setAlwaysOnTop(alwaysOnTop);
         if (p && p.catch) p.catch(function () {});
       } catch (err) {}
+    }));
+    ctxMenu.appendChild(mkCtxItem('Audio output\u2026', function () {
+      if (window.__rdioPickAudio) window.__rdioPickAudio();
     }));
     document.body.appendChild(ctxMenu);
   });
@@ -392,6 +506,75 @@ fn set_autostart(enable: bool) {
     let _ = enable;
 }
 
+/// Browsers only offer audio device lists/selection on "secure" pages, and a
+/// plain http:// rdio-scanner server (typical on a home network) is not one.
+/// The app therefore remembers the server's origin and, on the next start,
+/// tells its web engine to treat exactly that origin as secure. The first
+/// time a new http server is connected the app restarts itself once.
+fn secure_origin_path<R: Runtime>(app: &AppHandle<R>) -> Option<std::path::PathBuf> {
+    app.path().app_data_dir().ok().map(|d| d.join("secure_origin.txt"))
+}
+
+fn load_secure_origin<R: Runtime>(app: &AppHandle<R>) -> Option<String> {
+    let text = std::fs::read_to_string(secure_origin_path(app)?).ok()?;
+    let t = text.trim().to_string();
+    if t.starts_with("http://") && !t.contains(char::is_whitespace) && !t.contains(',') {
+        Some(t)
+    } else {
+        None
+    }
+}
+
+fn relaunch_soon<R: Runtime>(app: &AppHandle<R>) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        if let Ok(exe) = std::env::current_exe() {
+            // Wait a moment so this instance has exited (the app is
+            // single-instance), then start the app again.
+            let line = format!(
+                "ping -n 3 127.0.0.1 >nul & start \"\" \"{}\"",
+                exe.display()
+            );
+            let _ = Command::new("cmd")
+                .args(["/C", &line])
+                .creation_flags(0x0800_0000)
+                .spawn();
+            app.exit(0);
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = app;
+}
+
+fn note_server_origin<R: Runtime>(app: &AppHandle<R>, url: &tauri::Url) {
+    if url.scheme() != "http" {
+        return;
+    }
+    let host = match url.host_str() {
+        Some(h) => h.to_ascii_lowercase(),
+        None => return,
+    };
+    if host == "localhost" || host == "127.0.0.1" || host == "[::1]" || host.ends_with(".localhost") {
+        return;
+    }
+    let origin = url.origin().ascii_serialization();
+    if !origin.starts_with("http://") || origin.contains(',') {
+        return;
+    }
+    if load_secure_origin(app).as_deref() == Some(origin.as_str()) {
+        return;
+    }
+    if let Some(path) = secure_origin_path(app) {
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        if std::fs::write(path, &origin).is_ok() {
+            relaunch_soon(app);
+        }
+    }
+}
+
 /// Window geometry memory: last position/size (logical units), saved to
 /// geometry.json in the app data dir and restored on the next launch.
 #[derive(Clone, Copy)]
@@ -479,6 +662,11 @@ fn save_window_geometry<R: Runtime>(window: &Window<R>) {
 
 fn main() {
     tauri::Builder::default()
+        .on_page_load(|webview, payload| {
+            if let tauri::webview::PageLoadEvent::Finished = payload.event() {
+                note_server_origin(webview.app_handle(), payload.url());
+            }
+        })
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
@@ -486,6 +674,7 @@ fn main() {
             }
         }))
         .setup(|app| {
+            #[allow(unused_mut)]
             let mut wb = WebviewWindowBuilder::new(
                 app,
                 "main",
@@ -494,7 +683,16 @@ fn main() {
             .title("Rdio Sherlock")
             .decorations(false)
             .initialization_script(INIT_SCRIPT)
+            .initialization_script(AUDIO_SCRIPT)
             .initialization_script(PIN_SEED_SCRIPT);
+            #[cfg(windows)]
+            {
+                let mut args = String::from("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection");
+                if let Some(origin) = load_secure_origin(app.handle()) {
+                    args.push_str(&format!(" --unsafely-treat-insecure-origin-as-secure={}", origin));
+                }
+                wb = wb.additional_browser_args(&args);
+            }
             if let Some(g) = load_geometry(app.handle()) {
                 wb = wb.inner_size(g.w, g.h).position(g.x, g.y);
             } else {
