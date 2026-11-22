@@ -881,11 +881,15 @@ fn main() {
                 WindowEvent::CloseRequested { api, .. } => {
                     save_window_geometry(window);
                     let _ = window.hide();
-                    let _ = window.eval(QUIET_JS);
+                    if let Some(w) = window.app_handle().get_webview_window("main") {
+                        let _ = w.eval(QUIET_JS);
+                    }
                     api.prevent_close();
                 }
                 WindowEvent::Focused(true) => {
-                    let _ = window.eval(UNQUIET_JS);
+                    if let Some(w) = window.app_handle().get_webview_window("main") {
+                        let _ = w.eval(UNQUIET_JS);
+                    }
                 }
                 WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
                     save_window_geometry(window);
