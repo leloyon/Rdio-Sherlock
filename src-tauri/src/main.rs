@@ -68,6 +68,10 @@ static KEEP_AWAKE: AtomicBool = AtomicBool::new(true);
 static START_HIDDEN: AtomicBool = AtomicBool::new(false);
 
 static AUTO_LIVE: AtomicBool = AtomicBool::new(true);
+/// Pop-up mode: while the mini player is active, its window only appears
+/// during a call and fades away shortly after.
+static POPUP: AtomicBool = AtomicBool::new(false);
+static POPUP_HOLD: Mutex<Option<Instant>> = Mutex::new(None);
 static MINI_OPACITY: AtomicU32 = AtomicU32::new(100);
 static MINI_CORNER: AtomicU32 = AtomicU32::new(0);
 static EFFECTIVE_MUTE: AtomicBool = AtomicBool::new(false);
@@ -229,6 +233,7 @@ fn status_icon<R: Runtime>(app: &AppHandle<R>, state: u32) -> Option<tauri::imag
         1 => [63, 185, 80],
         2 => [248, 81, 73],
         3 => [88, 166, 255],
+        4 => [210, 153, 34],
         _ => return Some(tauri::image::Image::new_owned(px, w, h)),
     };
     let r = ((w.min(h) as f32) * 0.24).max(4.0);
@@ -257,39 +262,73 @@ fn start_tick_thread<R: Runtime>(app: AppHandle<R>) {
         let mut last_icon: u32 = 99;
         let mut last_sig: (bool, bool, bool) = (false, false, false);
         let mut last_alpha: i32 = -1;
+        let mut last_active = Instant::now();
+        let mut fade: f32 = 1.0;
         loop {
-            if n % 5 == 0 {
-                reload_quiet(&app);
-            }
-            n += 1;
-            let changed = sync_mute(&app);
-            let sn = snoozed();
-            let qn = quiet_now();
-            let sig = (sn, qn, MUTED.load(Ordering::SeqCst));
-            if changed || sig != last_sig {
-                last_sig = sig;
-                let _ = refresh_tray_menu(&app);
-            }
-            // tray icon status
-            let active = app
-                .get_webview_window("main")
-                .and_then(|w| w.title().ok())
-                .map(|t| t != "Rdio Sherlock")
-                .unwrap_or(false);
-            let state = if sig.2 || sn { 2 } else if qn { 3 } else if active { 1 } else { 0 };
-            if state != last_icon {
-                last_icon = state;
-                if let (Some(tray), Some(img)) = (app.tray_by_id("tray"), status_icon(&app, state)) {
-                    let _ = tray.set_icon(Some(img));
+            let win = app.get_webview_window("main");
+            let title = win.as_ref().and_then(|w| w.title().ok()).unwrap_or_default();
+            let nolink = title.ends_with("(no link)");
+            let active = !nolink && title != "Rdio Sherlock" && !title.is_empty();
+
+            if n % 4 == 0 {
+                if n % 20 == 0 {
+                    reload_quiet(&app);
+                }
+                let changed = sync_mute(&app);
+                let sn = snoozed();
+                let qn = quiet_now();
+                let sig = (sn, qn, MUTED.load(Ordering::SeqCst));
+                if changed || sig != last_sig {
+                    last_sig = sig;
+                    let _ = refresh_tray_menu(&app);
+                }
+                // tray icon status: muted/snoozed red, quiet hours blue,
+                // no link amber, call playing green
+                let state = if sig.2 || sn { 2 } else if qn { 3 } else if nolink { 4 } else if active { 1 } else { 0 };
+                if state != last_icon {
+                    last_icon = state;
+                    if let (Some(tray), Some(img)) = (app.tray_by_id("tray"), status_icon(&app, state)) {
+                        let _ = tray.set_icon(Some(img));
+                    }
                 }
             }
-            // mini player opacity (window narrower than ~450 logical px)
+            n += 1;
+
+            if active {
+                last_active = Instant::now();
+            }
+
             #[cfg(windows)]
-            if let Some(w) = app.get_webview_window("main") {
+            if let Some(w) = win.as_ref() {
                 if let (Ok(size), Ok(sf)) = (w.inner_size(), w.scale_factor()) {
                     let mini = (size.width as f64 / sf) < 450.0;
-                    let pct = MINI_OPACITY.load(Ordering::SeqCst).clamp(30, 100) as i32;
-                    let alpha = if mini { pct * 255 / 100 } else { 255 };
+                    // pop-up mode: show during calls, fade out afterwards
+                    if mini && POPUP.load(Ordering::SeqCst) {
+                        let held = POPUP_HOLD
+                            .lock()
+                            .map(|g| g.map(|t| t > Instant::now()).unwrap_or(false))
+                            .unwrap_or(false);
+                        let visible = w.is_visible().unwrap_or(true);
+                        if active {
+                            fade = 1.0;
+                            if !visible {
+                                let _ = w.show();
+                            }
+                        } else if visible && !held && last_active.elapsed() > std::time::Duration::from_secs(4) {
+                            fade -= 0.25;
+                            if fade <= 0.0 {
+                                let _ = w.hide();
+                                fade = 1.0;
+                            }
+                        } else {
+                            fade = 1.0;
+                        }
+                    } else {
+                        fade = 1.0;
+                    }
+                    let pct = MINI_OPACITY.load(Ordering::SeqCst).clamp(30, 100) as f32;
+                    let base = if mini { pct * 255.0 / 100.0 } else { 255.0 };
+                    let alpha = (base * fade).round().clamp(0.0, 255.0) as i32;
                     if alpha != last_alpha {
                         if let Ok(h) = w.hwnd() {
                             winpower::set_alpha(h.0 as isize, alpha as u8);
@@ -298,7 +337,7 @@ fn start_tick_thread<R: Runtime>(app: AppHandle<R>) {
                     }
                 }
             }
-            std::thread::sleep(std::time::Duration::from_secs(1));
+            std::thread::sleep(std::time::Duration::from_millis(250));
         }
     });
 }
@@ -485,12 +524,31 @@ const MINI_SCRIPT: &str = r##"(function () {
     if (!overlay) return;
     overlay.title = recent.length ? 'Recent calls\n' + recent.join('\n') : 'No calls heard yet';
     var c = read();
+    var disp0 = document.querySelector('.rdio-display');
+    var nolink = !!(disp0 && (disp0.textContent || '').indexOf('NO LINK') !== -1);
+    var led = document.querySelector('.rdio-status .led');
+    var col = '#3fb950';
+    if (led) {
+      var map = { blue: '#58a6ff', cyan: '#39d0d8', green: '#3fb950', magenta: '#d070e8', orange: '#f0883e', red: '#f85149', white: '#e6edf3', yellow: '#e3c33c' };
+      for (var k in map) { if (led.classList.contains(k)) { col = map[k]; break; } }
+    }
+    if (nolink) {
+      curName = '';
+      mainEl.textContent = 'No link';
+      subEl.textContent = 'Waiting for the server';
+      dot.style.animation = 'rdioPulse 1.2s ease-in-out infinite';
+      dot.style.background = '#d29922';
+      dot.style.boxShadow = 'none';
+      overlay.style.boxShadow = 'inset 4px 0 0 #d29922';
+      return;
+    }
     if (c) {
+      overlay.style.boxShadow = 'inset 4px 0 0 ' + col;
       mainEl.textContent = c.name;
       subEl.textContent = c.sub || 'Receiving';
       dot.style.animation = 'none';
-      dot.style.background = '#3fb950';
-      dot.style.boxShadow = '0 0 10px #3fb950';
+      dot.style.background = col;
+      dot.style.boxShadow = '0 0 10px ' + col;
       if (c.name !== curName) {
         curName = c.name;
         recent.unshift(new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) + '  ' + c.name);
@@ -503,6 +561,7 @@ const MINI_SCRIPT: &str = r##"(function () {
       dot.style.animation = 'rdioPulse 2.4s ease-in-out infinite';
       dot.style.background = '#566070';
       dot.style.boxShadow = 'none';
+      overlay.style.boxShadow = 'inset 4px 0 0 transparent';
     }
   }
   function build() {
@@ -559,6 +618,17 @@ const MINI_SCRIPT: &str = r##"(function () {
     b.addEventListener('click', function (e) { e.stopPropagation(); fn(); });
     return b;
   }
+  // Double-clicking the drag strip normally maximizes the window, which
+  // makes no sense for the mini player, so swallow the second click there.
+  window.addEventListener('mousedown', function (e) {
+    if (state.on && e.detail >= 2) {
+      e.stopImmediatePropagation();
+      e.preventDefault();
+    }
+  }, true);
+  window.addEventListener('dblclick', function (e) {
+    if (state.on) { e.stopImmediatePropagation(); e.preventDefault(); }
+  }, true);
   var qm = null;
   function closeQuick() { if (qm) { qm.remove(); qm = null; } }
   // The normal right-click menu is taller than the mini window, so the mini
@@ -567,9 +637,14 @@ const MINI_SCRIPT: &str = r##"(function () {
     closeQuick();
     if (!overlay) return;
     qm = document.createElement('div');
-    qm.style.cssText = 'position:absolute;inset:0;box-sizing:border-box;padding:34px 12px 12px;display:flex;gap:8px;align-items:center;background:rgba(13,17,25,0.98);';
-    qm.appendChild(pill('Full view', function () { closeQuick(); state.exit(); }));
-    qm.appendChild(pill('Audio', function () { closeQuick(); if (window.__rdioPickAudio) window.__rdioPickAudio(); }));
+    qm.style.cssText = 'position:absolute;inset:0;box-sizing:border-box;padding:30px 12px 8px;display:flex;flex-direction:column;gap:6px;justify-content:center;background:rgba(13,17,25,0.98);';
+    var row = document.createElement('div');
+    row.style.cssText = 'display:flex;gap:8px;';
+    var hint = document.createElement('div');
+    hint.textContent = 'Click anywhere, right-click again or press Esc to close';
+    hint.style.cssText = 'font-size:11px;color:#8e9bb0;text-align:center;';
+    row.appendChild(pill('Full view', function () { closeQuick(); state.exit(); }));
+    row.appendChild(pill('Audio', function () { closeQuick(); if (window.__rdioPickAudio) window.__rdioPickAudio(); }));
     var steps = [100, 85, 70, 50];
     var curOp = (window.__rdioPrefs && window.__rdioPrefs.miniOpacity) || 100;
     var opBtn = pill('Opacity ' + curOp + '%', function () {
@@ -581,11 +656,13 @@ const MINI_SCRIPT: &str = r##"(function () {
         window.__TAURI__.event.emit('rdio-mini-opacity', curOp);
       } catch (e) {}
     });
-    qm.appendChild(opBtn);
-    qm.appendChild(pill('Server', function () {
+    row.appendChild(opBtn);
+    row.appendChild(pill('Server', function () {
       closeQuick(); state.exit();
       window.location.href = 'http://tauri.localhost/index.html#edit';
     }));
+    qm.appendChild(row);
+    qm.appendChild(hint);
     qm.addEventListener('click', closeQuick);
     qm.addEventListener('contextmenu', function (e) { e.preventDefault(); e.stopPropagation(); closeQuick(); });
     overlay.appendChild(qm);
@@ -959,15 +1036,18 @@ const INIT_SCRIPT: &str = r##"(function () {
   var lastCallText = '';
   var trayIconPromise = null;
   function setAppTitle(t) {
-    if (t !== BASE_TITLE) {
+    var nolink = / \(no link\)$/.test(t);
+    if (t !== BASE_TITLE && !nolink) {
       lastCallText = t + ' · ' + new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
     }
     // The window title goes back to the plain name when idle (per the
     // taskbar rule), but the tray tooltip then carries the last call
     // heard, so hovering the icon shows what was missed.
-    var tooltip = (t === BASE_TITLE && lastCallText)
-      ? BASE_TITLE + ' — last: ' + lastCallText
-      : t;
+    var tooltip = nolink
+      ? BASE_TITLE + ' — no link to the server'
+      : (t === BASE_TITLE && lastCallText)
+        ? BASE_TITLE + ' — last: ' + lastCallText
+        : t;
     if (t === lastTitle && tooltip === lastTooltip) return;
     lastTitle = t;
     lastTooltip = tooltip;
@@ -994,6 +1074,7 @@ const INIT_SCRIPT: &str = r##"(function () {
   function readTitle() {
     var disp = document.querySelector('.rdio-display');
     if (!disp) return null;
+    if ((disp.textContent || '').indexOf('NO LINK') !== -1) return BASE_TITLE + ' (no link)';
     var big = disp.querySelector('.row.big span');
     var name = big ? (big.textContent || '').trim() : '';
     if (!name || /^rdio scanner/i.test(name)) return BASE_TITLE;
@@ -1159,7 +1240,8 @@ fn refresh_tray_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     }
     let crefs: Vec<&dyn IsMenuItem<R>> = corner_items.iter().map(|i| i as &dyn IsMenuItem<R>).collect();
     let corner_menu = Submenu::with_items(app, "Opens in", true, &crefs)?;
-    let mini_menu = Submenu::with_items(app, "Mini player", true, &[&mini as &dyn IsMenuItem<R>, &opa_menu, &corner_menu])?;
+    let popup = CheckMenuItem::with_id(app, "popup", "Pop-up mode (only show during calls)", true, POPUP.load(Ordering::SeqCst), None::<&str>)?;
+    let mini_menu = Submenu::with_items(app, "Mini player", true, &[&mini as &dyn IsMenuItem<R>, &popup, &opa_menu, &corner_menu])?;
 
     let audio = MenuItem::with_id(app, "audio", "Audio output…", true, None::<&str>)?;
 
@@ -1446,6 +1528,7 @@ fn main() {
             KEEP_AWAKE.store(load_keep_awake(app.handle()), Ordering::SeqCst);
             START_HIDDEN.store(load_flag(app.handle(), "start_hidden.txt", false), Ordering::SeqCst);
             AUTO_LIVE.store(load_flag(app.handle(), "auto_live.txt", true), Ordering::SeqCst);
+            POPUP.store(load_flag(app.handle(), "popup.txt", false), Ordering::SeqCst);
             MINI_OPACITY.store(load_u32(app.handle(), "mini_opacity.txt", 100), Ordering::SeqCst);
             MINI_CORNER.store(load_u32(app.handle(), "mini_corner.txt", 0), Ordering::SeqCst);
             reload_quiet(app.handle());
@@ -1561,6 +1644,12 @@ fn main() {
                         push_state(app);
                         let _ = refresh_tray_menu(app);
                     }
+                    "popup" => {
+                        let on = !POPUP.load(Ordering::SeqCst);
+                        POPUP.store(on, Ordering::SeqCst);
+                        save_flag(app, "popup.txt", on);
+                        let _ = refresh_tray_menu(app);
+                    }
                     "auto_live" => {
                         let on = !AUTO_LIVE.load(Ordering::SeqCst);
                         AUTO_LIVE.store(on, Ordering::SeqCst);
@@ -1610,6 +1699,9 @@ fn main() {
                     } = event
                     {
                         let app = tray.app_handle();
+                        if let Ok(mut g) = POPUP_HOLD.lock() {
+                            *g = Some(Instant::now() + std::time::Duration::from_secs(20));
+                        }
                         if let Some(window) = app.get_webview_window("main") {
                             let _ = window.show();
                             let _ = window.set_focus();
