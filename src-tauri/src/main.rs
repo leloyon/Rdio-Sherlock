@@ -653,7 +653,7 @@ const MINI_SCRIPT: &str = r##"(function () {
     var row = document.createElement('div');
     row.style.cssText = 'display:flex;gap:8px;';
     var hint = document.createElement('div');
-    hint.textContent = 'Click anywhere, right-click again or press Esc to close';
+    hint.textContent = 'Click anywhere (even outside), right-click again or press Esc to close';
     hint.style.cssText = 'font-size:11px;color:#8e9bb0;text-align:center;';
     row.appendChild(pill('Full view', function () { closeQuick(); state.exit(); }));
     var steps = [100, 85, 70, 50];
@@ -685,6 +685,8 @@ const MINI_SCRIPT: &str = r##"(function () {
     overlay.appendChild(qm);
   }
   document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeQuick(); });
+  // clicking outside the window (another app, the desktop) also closes it
+  window.addEventListener('blur', closeQuick);
   function setMiniStyle(on) {
     var old = document.getElementById('rdio-mini-style');
     if (old) old.remove();
