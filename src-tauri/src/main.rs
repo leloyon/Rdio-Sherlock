@@ -603,6 +603,11 @@ const MINI_SCRIPT: &str = r##"(function () {
     if (!t) return;
     try { var p = t.window.getCurrentWindow().setSize(Logical(w, h)); if (p && p.catch) p.catch(function () {}); } catch (e) {}
   }
+  function skipTaskbar(on) {
+    var t = api();
+    if (!t) return;
+    try { var p = t.window.getCurrentWindow().setSkipTaskbar(on); if (p && p.catch) p.catch(function () {}); } catch (e) {}
+  }
   function onTop(on) {
     var t = api();
     if (!t) return;
@@ -701,6 +706,7 @@ const MINI_SCRIPT: &str = r##"(function () {
       setMiniStyle(true);
       resizeTo(W, H);
       onTop(true);
+      skipTaskbar(true);
       setTimeout(toCorner, 150);
     };
     if (!t) { go(); return; }
@@ -730,6 +736,7 @@ const MINI_SCRIPT: &str = r##"(function () {
     } catch (e) {}
     resizeTo(w, h);
     onTop(false);
+    skipTaskbar(false);
   };
   state.toggle = function () { if (state.on) state.exit(); else state.enter(); };
   function init() {
