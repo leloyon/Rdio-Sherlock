@@ -525,6 +525,13 @@ const MINI_SCRIPT: &str = r##"(function () {
     } catch (e) {}
     return { name: name, sub: [tgid ? 'TGID ' + tgid : '', (label && label !== name) ? label : ''].filter(Boolean).join('  ·  ') };
   }
+  function liveBtn() {
+    var bs = document.querySelectorAll('button.rdio-button');
+    for (var i = 0; i < bs.length; i++) {
+      if (/live\s*feed/i.test(bs[i].textContent || '')) return bs[i];
+    }
+    return null;
+  }
   function update() {
     if (!overlay) return;
     overlay.title = recent.length ? 'Recent calls\n' + recent.join('\n') : 'No calls heard yet';
@@ -545,6 +552,17 @@ const MINI_SCRIPT: &str = r##"(function () {
       dot.style.background = '#d29922';
       dot.style.boxShadow = 'none';
       overlay.style.boxShadow = 'inset 4px 0 0 #d29922';
+      return;
+    }
+    var lb = liveBtn();
+    if (lb && !lb.classList.contains('on')) {
+      curName = '';
+      mainEl.textContent = 'Live feed off';
+      subEl.textContent = 'Click the dot to turn it on';
+      dot.style.animation = 'none';
+      dot.style.background = 'transparent';
+      dot.style.boxShadow = 'inset 0 0 0 2px #8e9bb0';
+      overlay.style.boxShadow = 'inset 4px 0 0 transparent';
       return;
     }
     if (c) {
@@ -583,14 +601,21 @@ const MINI_SCRIPT: &str = r##"(function () {
       quickMenu();
     });
     dot = document.createElement('div');
-    dot.style.cssText = 'flex:none;width:12px;height:12px;border-radius:50%;background:#566070;transition:background .3s,box-shadow .3s;';
+    dot.style.cssText = 'flex:none;width:12px;height:12px;padding:6px;margin:-6px;box-sizing:content-box;background-clip:content-box;border-radius:50%;background:#566070;transition:background .3s,box-shadow .3s;cursor:pointer;';
+    dot.title = 'Turn live feed on / off';
+    dot.addEventListener('click', function (e) {
+      e.stopPropagation();
+      var b = liveBtn();
+      if (b) b.click();
+      setTimeout(update, 150);
+    });
     var col = document.createElement('div');
     col.style.cssText = 'flex:1;min-width:0;';
     mainEl = document.createElement('div');
     mainEl.style.cssText = 'font-size:20px;font-weight:600;letter-spacing:.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
     subEl = document.createElement('div');
     subEl.style.cssText = 'margin-top:3px;font-size:12px;color:#8e9bb0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
-    [dot, col, mainEl, subEl].forEach(function (el) { el.setAttribute('data-tauri-drag-region', ''); });
+    [col, mainEl, subEl].forEach(function (el) { el.setAttribute('data-tauri-drag-region', ''); });
     col.appendChild(mainEl); col.appendChild(subEl);
     var exp = document.createElement('button');
     exp.type = 'button';
