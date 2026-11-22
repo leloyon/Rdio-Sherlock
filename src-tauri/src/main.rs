@@ -567,7 +567,7 @@ const MINI_SCRIPT: &str = r##"(function () {
   function build() {
     overlay = document.createElement('div');
     overlay.id = 'rdio-mini';
-    overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483646;box-sizing:border-box;padding:34px 16px 12px 20px;display:flex;align-items:center;gap:14px;background:linear-gradient(135deg,#141a26 0%,#0d1119 100%);font-family:-apple-system,"Segoe UI",Roboto,sans-serif;color:#f2f5fa;overflow:hidden;';
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483646;box-sizing:border-box;padding:12px 16px 12px 20px;display:flex;align-items:center;gap:14px;background:linear-gradient(135deg,#141a26 0%,#0d1119 100%);font-family:-apple-system,"Segoe UI",Roboto,sans-serif;color:#f2f5fa;overflow:hidden;';
     var kf = document.createElement('style');
     kf.id = 'rdio-mini-kf';
     kf.textContent = '@keyframes rdioPulse{0%,100%{opacity:.4}50%{opacity:1}}';
@@ -637,7 +637,7 @@ const MINI_SCRIPT: &str = r##"(function () {
     closeQuick();
     if (!overlay) return;
     qm = document.createElement('div');
-    qm.style.cssText = 'position:absolute;inset:0;box-sizing:border-box;padding:30px 12px 8px;display:flex;flex-direction:column;gap:6px;justify-content:center;background:rgba(13,17,25,0.98);';
+    qm.style.cssText = 'position:absolute;inset:0;box-sizing:border-box;padding:28px 12px 12px;display:flex;flex-direction:column;gap:6px;justify-content:center;background:rgba(13,17,25,0.98);';
     var row = document.createElement('div');
     row.style.cssText = 'display:flex;gap:8px;';
     var hint = document.createElement('div');
