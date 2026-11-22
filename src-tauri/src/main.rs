@@ -547,6 +547,10 @@ fn relaunch_soon<R: Runtime>(app: &AppHandle<R>) {
     let _ = app;
 }
 
+/// Shown for a few seconds before the one-time restart so it is clear why the
+/// app is closing and reopening.
+const RESTART_NOTICE_JS: &str = r##"(function(){try{if(document.getElementById('rdio-restart-notice'))return;var d=document.createElement('div');d.id='rdio-restart-notice';d.style.cssText='position:fixed;inset:0;z-index:2147483647;display:flex;align-items:center;justify-content:center;background:rgba(10,12,18,0.88);font-family:-apple-system,"Segoe UI",Roboto,sans-serif;';var b=document.createElement('div');b.style.cssText='max-width:380px;padding:22px 26px;border-radius:12px;background:#1e1e24;border:1px solid rgba(255,255,255,0.16);color:#f2f2f2;text-align:center;line-height:1.45;';var h=document.createElement('div');h.textContent='Restarting Rdio Sherlock';h.style.cssText='font-size:17px;font-weight:600;margin-bottom:8px;';var t=document.createElement('div');t.textContent='This is a one-time restart for this server. It turns on audio output selection (for example a Bluetooth speaker). The app will reopen by itself in a few seconds.';t.style.cssText='font-size:13px;color:#c8c8d0;';b.appendChild(h);b.appendChild(t);d.appendChild(b);(document.body||document.documentElement).appendChild(d);}catch(e){}})();"##;
+
 fn note_server_origin<R: Runtime>(app: &AppHandle<R>, url: &tauri::Url) {
     if url.scheme() != "http" {
         return;
@@ -570,7 +574,14 @@ fn note_server_origin<R: Runtime>(app: &AppHandle<R>, url: &tauri::Url) {
             let _ = std::fs::create_dir_all(dir);
         }
         if std::fs::write(path, &origin).is_ok() {
-            relaunch_soon(app);
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.eval(RESTART_NOTICE_JS);
+            }
+            let handle = app.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_secs(4));
+                relaunch_soon(&handle);
+            });
         }
     }
 }
