@@ -624,11 +624,11 @@ fn relaunch_soon<R: Runtime>(app: &AppHandle<R>) {
             // Wait a moment so this instance has exited (the app is
             // single-instance), then start the app again.
             let line = format!(
-                "ping -n 3 127.0.0.1 >nul & start \"\" \"{}\"",
+                "/C \"ping -n 3 127.0.0.1 >nul & start \"\" \"{}\"\"",
                 exe.display()
             );
             let _ = Command::new("cmd")
-                .args(["/C", &line])
+                .raw_arg(line)
                 .creation_flags(0x0800_0000)
                 .spawn();
             app.exit(0);
