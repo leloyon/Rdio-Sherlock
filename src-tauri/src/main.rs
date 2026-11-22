@@ -464,6 +464,8 @@ const MINI_SCRIPT: &str = r##"(function () {
   }
   function read() {
     var disp = document.querySelector('.rdio-display');
+    var led = document.querySelector('.rdio-status .led');
+    if (led && !led.classList.contains('on')) return null;
     var big = disp ? disp.querySelector('.row.big span') : null;
     var name = big ? (big.textContent || '').trim() : '';
     if (!name || /^rdio scanner/i.test(name)) return null;
@@ -484,12 +486,19 @@ const MINI_SCRIPT: &str = r##"(function () {
     if (c) {
       mainEl.textContent = c.name;
       subEl.textContent = c.sub || 'Receiving';
+      dot.style.animation = 'none';
       dot.style.background = '#3fb950';
       dot.style.boxShadow = '0 0 10px #3fb950';
-      lastCall = c.name + ' · ' + new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+      if (c.name !== curName) {
+        curName = c.name;
+        recent.unshift(new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) + '  ' + c.name);
+        if (recent.length > 8) recent.pop();
+      }
     } else {
-      mainEl.textContent = 'Listening…';
-      subEl.textContent = lastCall ? 'Last: ' + lastCall : 'Waiting for calls';
+      curName = '';
+      mainEl.textContent = 'Scanning\u2026';
+      subEl.textContent = 'Waiting for calls';
+      dot.style.animation = 'rdioPulse 2.4s ease-in-out infinite';
       dot.style.background = '#566070';
       dot.style.boxShadow = 'none';
     }
@@ -498,6 +507,14 @@ const MINI_SCRIPT: &str = r##"(function () {
     overlay = document.createElement('div');
     overlay.id = 'rdio-mini';
     overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483646;box-sizing:border-box;padding:34px 16px 12px 20px;display:flex;align-items:center;gap:14px;background:linear-gradient(135deg,#141a26 0%,#0d1119 100%);font-family:-apple-system,"Segoe UI",Roboto,sans-serif;color:#f2f5fa;overflow:hidden;';
+    var kf = document.createElement('style');
+    kf.id = 'rdio-mini-kf';
+    kf.textContent = '@keyframes rdioPulse{0%,100%{opacity:.4}50%{opacity:1}}';
+    overlay.appendChild(kf);
+    overlay.addEventListener('contextmenu', function (e) {
+      e.preventDefault(); e.stopPropagation();
+      quickMenu();
+    });
     dot = document.createElement('div');
     dot.style.cssText = 'flex:none;width:12px;height:12px;border-radius:50%;background:#566070;transition:background .3s,box-shadow .3s;';
     var col = document.createElement('div');
@@ -530,6 +547,45 @@ const MINI_SCRIPT: &str = r##"(function () {
     if (!t) return;
     try { var p = t.window.getCurrentWindow().setAlwaysOnTop(on); if (p && p.catch) p.catch(function () {}); } catch (e) {}
   }
+  function pill(label, fn) {
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = label;
+    b.style.cssText = 'flex:1;padding:9px 6px;border:1px solid rgba(255,255,255,0.16);border-radius:9px;background:rgba(255,255,255,0.07);color:#f2f5fa;font-size:12px;cursor:pointer;white-space:nowrap;';
+    b.addEventListener('mouseenter', function () { b.style.background = 'rgba(255,255,255,0.16)'; });
+    b.addEventListener('mouseleave', function () { b.style.background = 'rgba(255,255,255,0.07)'; });
+    b.addEventListener('click', function (e) { e.stopPropagation(); fn(); });
+    return b;
+  }
+  var qm = null;
+  function closeQuick() { if (qm) { qm.remove(); qm = null; } }
+  // The normal right-click menu is taller than the mini window, so the mini
+  // player shows a compact row of the few things that make sense here.
+  function quickMenu() {
+    closeQuick();
+    if (!overlay) return;
+    qm = document.createElement('div');
+    qm.style.cssText = 'position:absolute;inset:0;box-sizing:border-box;padding:34px 12px 12px;display:flex;gap:8px;align-items:center;background:rgba(13,17,25,0.98);';
+    qm.appendChild(pill('Full view', function () { closeQuick(); state.exit(); }));
+    qm.appendChild(pill('Audio output', function () { closeQuick(); if (window.__rdioPickAudio) window.__rdioPickAudio(); }));
+    qm.appendChild(pill('Change server', function () {
+      closeQuick(); state.exit();
+      window.location.href = 'http://tauri.localhost/index.html#edit';
+    }));
+    qm.addEventListener('click', closeQuick);
+    qm.addEventListener('contextmenu', function (e) { e.preventDefault(); e.stopPropagation(); closeQuick(); });
+    overlay.appendChild(qm);
+  }
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeQuick(); });
+  function setMiniStyle(on) {
+    var old = document.getElementById('rdio-mini-style');
+    if (old) old.remove();
+    if (!on) return;
+    var st = document.createElement('style');
+    st.id = 'rdio-mini-style';
+    st.textContent = '#rdio-strip-btns,#rdio-mini-btn{display:none!important;}';
+    (document.head || document.documentElement).appendChild(st);
+  }
   function toCorner() {
     var t = api();
     var corner = (window.__rdioPrefs && window.__rdioPrefs.miniCorner) || 0;
@@ -551,6 +607,7 @@ const MINI_SCRIPT: &str = r##"(function () {
       state.on = true;
       try { localStorage.setItem(KEY, '1'); } catch (e) {}
       if (!overlay) build();
+      setMiniStyle(true);
       resizeTo(W, H);
       onTop(true);
       setTimeout(toCorner, 150);
@@ -573,6 +630,8 @@ const MINI_SCRIPT: &str = r##"(function () {
     try { localStorage.removeItem(KEY); } catch (e) {}
     if (timer) { clearInterval(timer); timer = null; }
     if (overlay) { overlay.remove(); overlay = null; }
+    closeQuick();
+    setMiniStyle(false);
     var w = 1280, h = 800;
     try {
       var m = (localStorage.getItem(PREV) || '').match(/^(\d+)x(\d+)$/);
@@ -695,6 +754,10 @@ const AUDIO_SCRIPT: &str = r##"(function () {
     closePanel();
     panel = document.createElement('div');
     panel.style.cssText = 'position:fixed;z-index:2147483647;left:50%;top:60px;transform:translateX(-50%);background:#1e1e24;border:1px solid rgba(255,255,255,0.16);border-radius:8px;padding:6px;min-width:260px;max-height:70vh;overflow:auto;box-shadow:0 10px 28px rgba(0,0,0,0.5);font-family:-apple-system,"Segoe UI",Roboto,sans-serif;';
+    if (window.__rdioMini && window.__rdioMini.on) {
+      panel.style.left = '6px'; panel.style.right = '6px'; panel.style.top = '30px'; panel.style.bottom = '6px';
+      panel.style.transform = 'none'; panel.style.maxHeight = 'none'; panel.style.minWidth = '0';
+    }
     var h = document.createElement('div');
     h.textContent = 'Audio output';
     h.style.cssText = 'padding:6px 12px;font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:#aab;';
@@ -811,6 +874,13 @@ const INIT_SCRIPT: &str = r##"(function () {
       btns.appendChild(mkBtn('✕', 'Close (tucks into tray)', function () {
         return withWin(function (w) { return w.close(); });
       }));
+      var left = document.createElement('div');
+      left.id = 'rdio-mini-btn';
+      left.style.cssText = 'display:flex;align-items:center;padding-left:6px;padding-right:4px;background:rgba(15,20,30,0.72);border-bottom-right-radius:8px;';
+      left.appendChild(mkBtn('\u29c9', 'Mini player', function () {
+        if (window.__rdioMini) window.__rdioMini.toggle();
+      }));
+      strip.appendChild(left);
       strip.appendChild(drag);
       strip.appendChild(btns);
       root.appendChild(strip);
@@ -966,6 +1036,7 @@ const INIT_SCRIPT: &str = r##"(function () {
   document.addEventListener('contextmenu', function (e) {
     e.preventDefault();
     closeCtxMenu();
+    if (window.__rdioMini && window.__rdioMini.on) return;
     ctxMenu = document.createElement('div');
     ctxMenu.style.cssText = 'position:fixed;z-index:2147483647;background:#1e1e24;border:1px solid rgba(255,255,255,0.16);border-radius:8px;padding:4px;min-width:170px;box-shadow:0 10px 28px rgba(0,0,0,0.5);font-family:-apple-system,"Segoe UI",Roboto,sans-serif;';
     ctxMenu.style.left = Math.min(e.clientX, window.innerWidth - 190) + 'px';
