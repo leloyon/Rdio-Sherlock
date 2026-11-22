@@ -200,10 +200,11 @@ fn sync_mute<R: Runtime>(app: &AppHandle<R>) -> bool {
 fn push_state<R: Runtime>(app: &AppHandle<R>) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.eval(&format!(
-            "window.__rdioPrefs={{autoLive:{},miniCorner:{},miniOpacity:{}}};",
+            "window.__rdioPrefs={{autoLive:{},miniCorner:{},miniOpacity:{},popup:{}}};",
             AUTO_LIVE.load(Ordering::SeqCst),
             MINI_CORNER.load(Ordering::SeqCst),
-            MINI_OPACITY.load(Ordering::SeqCst)
+            MINI_OPACITY.load(Ordering::SeqCst),
+            POPUP.load(Ordering::SeqCst)
         ));
         if EFFECTIVE_MUTE.load(Ordering::SeqCst) {
             let _ = w.eval(MUTE_JS);
@@ -655,7 +656,6 @@ const MINI_SCRIPT: &str = r##"(function () {
     hint.textContent = 'Click anywhere, right-click again or press Esc to close';
     hint.style.cssText = 'font-size:11px;color:#8e9bb0;text-align:center;';
     row.appendChild(pill('Full view', function () { closeQuick(); state.exit(); }));
-    row.appendChild(pill('Audio', function () { closeQuick(); if (window.__rdioPickAudio) window.__rdioPickAudio(); }));
     var steps = [100, 85, 70, 50];
     var curOp = (window.__rdioPrefs && window.__rdioPrefs.miniOpacity) || 100;
     var opBtn = pill('Opacity ' + curOp + '%', function () {
@@ -668,10 +668,16 @@ const MINI_SCRIPT: &str = r##"(function () {
       } catch (e) {}
     });
     row.appendChild(opBtn);
-    row.appendChild(pill('Server', function () {
-      closeQuick(); state.exit();
-      window.location.href = 'http://tauri.localhost/index.html#edit';
-    }));
+    var popOn = !!(window.__rdioPrefs && window.__rdioPrefs.popup);
+    var popBtn = pill('Pop-up: ' + (popOn ? 'On' : 'Off'), function () {
+      popOn = !popOn;
+      popBtn.textContent = 'Pop-up: ' + (popOn ? 'On' : 'Off');
+      try {
+        if (window.__rdioPrefs) window.__rdioPrefs.popup = popOn;
+        window.__TAURI__.event.emit('rdio-mini-popup', popOn);
+      } catch (e) {}
+    });
+    row.appendChild(popBtn);
     qm.appendChild(row);
     qm.appendChild(hint);
     qm.addEventListener('click', closeQuick);
@@ -1669,6 +1675,7 @@ fn main() {
                         let on = !POPUP.load(Ordering::SeqCst);
                         POPUP.store(on, Ordering::SeqCst);
                         save_flag(app, "popup.txt", on);
+                        push_state(app);
                         if !on {
                             // turning pop-up mode off brings a hidden mini player back
                             if let Some(w) = app.get_webview_window("main") {
@@ -1745,6 +1752,18 @@ fn main() {
             // emitting this (only) event.
             {
                 let h = app.handle().clone();
+                let h2 = app.handle().clone();
+                app.listen("rdio-mini-popup", move |ev| {
+                    let on = ev.payload().trim().trim_matches('"') == "true";
+                    POPUP.store(on, Ordering::SeqCst);
+                    save_flag(&h2, "popup.txt", on);
+                    if !on {
+                        if let Some(w) = h2.get_webview_window("main") {
+                            let _ = w.show();
+                        }
+                    }
+                    let _ = refresh_tray_menu(&h2);
+                });
                 app.listen("rdio-mini-opacity", move |ev| {
                     let v: u32 = ev.payload().trim().trim_matches('"').parse().unwrap_or(100);
                     let v = v.clamp(30, 100);
