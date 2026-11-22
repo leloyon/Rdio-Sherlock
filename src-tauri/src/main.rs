@@ -68,6 +68,10 @@ static KEEP_AWAKE: AtomicBool = AtomicBool::new(true);
 static START_HIDDEN: AtomicBool = AtomicBool::new(false);
 
 static AUTO_LIVE: AtomicBool = AtomicBool::new(true);
+/// Optional: start in the mini player. Off by default (the app always opens
+/// in full view); applied once per app run, after the scanner page loads.
+static START_MINI: AtomicBool = AtomicBool::new(false);
+static MINI_STARTED: AtomicBool = AtomicBool::new(false);
 /// Pop-up mode: while the mini player is active, its window only appears
 /// during a call and fades away shortly after.
 static POPUP: AtomicBool = AtomicBool::new(false);
@@ -701,7 +705,6 @@ const MINI_SCRIPT: &str = r##"(function () {
     var t = api();
     var go = function () {
       state.on = true;
-      try { localStorage.setItem(KEY, '1'); } catch (e) {}
       if (!overlay) build();
       setMiniStyle(true);
       resizeTo(W, H);
@@ -724,7 +727,6 @@ const MINI_SCRIPT: &str = r##"(function () {
   };
   state.exit = function () {
     state.on = false;
-    try { localStorage.removeItem(KEY); } catch (e) {}
     if (timer) { clearInterval(timer); timer = null; }
     if (overlay) { overlay.remove(); overlay = null; }
     closeQuick();
@@ -739,14 +741,6 @@ const MINI_SCRIPT: &str = r##"(function () {
     skipTaskbar(false);
   };
   state.toggle = function () { if (state.on) state.exit(); else state.enter(); };
-  function init() {
-    var saved = false;
-    try { saved = localStorage.getItem(KEY) === '1'; } catch (e) {}
-    if (saved && document.querySelector('.rdio-display, app-rdio-scanner, rdio-scanner')) {
-      state.on = false; state.enter();
-    }
-  }
-  document.addEventListener('DOMContentLoaded', function () { setTimeout(init, 800); });
 })();"##;
 
 /// Presses Live Feed by itself after the scanner page has loaded (when the
@@ -1248,7 +1242,8 @@ fn refresh_tray_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let crefs: Vec<&dyn IsMenuItem<R>> = corner_items.iter().map(|i| i as &dyn IsMenuItem<R>).collect();
     let corner_menu = Submenu::with_items(app, "Opens in", true, &crefs)?;
     let popup = CheckMenuItem::with_id(app, "popup", "Pop-up mode (only show during calls)", true, POPUP.load(Ordering::SeqCst), None::<&str>)?;
-    let mini_menu = Submenu::with_items(app, "Mini player", true, &[&mini as &dyn IsMenuItem<R>, &popup, &opa_menu, &corner_menu])?;
+    let start_mini = CheckMenuItem::with_id(app, "start_mini", "Start in mini player", true, START_MINI.load(Ordering::SeqCst), None::<&str>)?;
+    let mini_menu = Submenu::with_items(app, "Mini player", true, &[&mini as &dyn IsMenuItem<R>, &popup, &start_mini, &opa_menu, &corner_menu])?;
 
     let audio = MenuItem::with_id(app, "audio", "Audio output…", true, None::<&str>)?;
 
@@ -1463,7 +1458,7 @@ fn load_geometry<R: Runtime>(app: &AppHandle<R>) -> Option<Geometry> {
         w: get("w")?,
         h: get("h")?,
     };
-    if g.w >= 300.0 && g.h >= 80.0 && g.x.abs() < 10000.0 && g.y.abs() < 10000.0 {
+    if g.w >= 400.0 && g.h >= 300.0 && g.x.abs() < 10000.0 && g.y.abs() < 10000.0 {
         Some(g)
     } else {
         None
@@ -1523,6 +1518,16 @@ fn main() {
             if let tauri::webview::PageLoadEvent::Finished = payload.event() {
                 note_server_origin(webview.app_handle(), payload.url());
                 push_state(webview.app_handle());
+                let u = payload.url();
+                let on_server = u.host_str().map(|h| h != "tauri.localhost").unwrap_or(false);
+                if on_server
+                    && START_MINI.load(Ordering::SeqCst)
+                    && !MINI_STARTED.swap(true, Ordering::SeqCst)
+                {
+                    if let Some(w) = webview.app_handle().get_webview_window("main") {
+                        let _ = w.eval("setTimeout(function(){if(window.__rdioMini&&!window.__rdioMini.on){window.__rdioMini.enter();}},1500);");
+                    }
+                }
             }
         })
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -1536,6 +1541,7 @@ fn main() {
             START_HIDDEN.store(load_flag(app.handle(), "start_hidden.txt", false), Ordering::SeqCst);
             AUTO_LIVE.store(load_flag(app.handle(), "auto_live.txt", true), Ordering::SeqCst);
             POPUP.store(load_flag(app.handle(), "popup.txt", false), Ordering::SeqCst);
+            START_MINI.store(load_flag(app.handle(), "start_mini.txt", false), Ordering::SeqCst);
             MINI_OPACITY.store(load_u32(app.handle(), "mini_opacity.txt", 100), Ordering::SeqCst);
             MINI_CORNER.store(load_u32(app.handle(), "mini_corner.txt", 0), Ordering::SeqCst);
             reload_quiet(app.handle());
@@ -1649,6 +1655,12 @@ fn main() {
                         MINI_CORNER.store(v, Ordering::SeqCst);
                         save_u32(app, "mini_corner.txt", v);
                         push_state(app);
+                        let _ = refresh_tray_menu(app);
+                    }
+                    "start_mini" => {
+                        let on = !START_MINI.load(Ordering::SeqCst);
+                        START_MINI.store(on, Ordering::SeqCst);
+                        save_flag(app, "start_mini.txt", on);
                         let _ = refresh_tray_menu(app);
                     }
                     "popup" => {
