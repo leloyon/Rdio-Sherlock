@@ -499,8 +499,6 @@ const INIT_SCRIPT: &str = r##"(function () {
 fn refresh_tray_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let muted = MUTED.load(Ordering::SeqCst);
 
-    let show = MenuItem::with_id(app, "show", "Show", true, None::<&str>)?;
-    let minimize = MenuItem::with_id(app, "minimize", "Minimize", true, None::<&str>)?;
     let server = MenuItem::with_id(app, "server", "Change server…", true, None::<&str>)?;
     let audio = MenuItem::with_id(app, "audio", "Audio output…", true, None::<&str>)?;
     let mute = MenuItem::with_id(
@@ -530,7 +528,7 @@ fn refresh_tray_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
 
     let menu = Menu::with_items(
         app,
-        &[&show, &minimize, &server, &audio, &mute, &autostart, &keep_awake, &quit],
+        &[&server, &audio, &mute, &autostart, &keep_awake, &quit],
     )?;
     if let Some(tray) = app.tray_by_id("tray") {
         let _ = tray.set_menu(Some(menu));
