@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Mutex;
 use std::time::Instant;
 use tauri::{
+    Listener,
     menu::{CheckMenuItem, IsMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu},
     tray::{MouseButton, TrayIconBuilder, TrayIconEvent},
     AppHandle, Manager, Runtime, WebviewUrl, WebviewWindowBuilder, Window, WindowEvent,
@@ -191,9 +192,10 @@ fn sync_mute<R: Runtime>(app: &AppHandle<R>) -> bool {
 fn push_state<R: Runtime>(app: &AppHandle<R>) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.eval(&format!(
-            "window.__rdioPrefs={{autoLive:{},miniCorner:{}}};",
+            "window.__rdioPrefs={{autoLive:{},miniCorner:{},miniOpacity:{}}};",
             AUTO_LIVE.load(Ordering::SeqCst),
-            MINI_CORNER.load(Ordering::SeqCst)
+            MINI_CORNER.load(Ordering::SeqCst),
+            MINI_OPACITY.load(Ordering::SeqCst)
         ));
         if EFFECTIVE_MUTE.load(Ordering::SeqCst) {
             let _ = w.eval(MUTE_JS);
@@ -567,8 +569,20 @@ const MINI_SCRIPT: &str = r##"(function () {
     qm = document.createElement('div');
     qm.style.cssText = 'position:absolute;inset:0;box-sizing:border-box;padding:34px 12px 12px;display:flex;gap:8px;align-items:center;background:rgba(13,17,25,0.98);';
     qm.appendChild(pill('Full view', function () { closeQuick(); state.exit(); }));
-    qm.appendChild(pill('Audio output', function () { closeQuick(); if (window.__rdioPickAudio) window.__rdioPickAudio(); }));
-    qm.appendChild(pill('Change server', function () {
+    qm.appendChild(pill('Audio', function () { closeQuick(); if (window.__rdioPickAudio) window.__rdioPickAudio(); }));
+    var steps = [100, 85, 70, 50];
+    var curOp = (window.__rdioPrefs && window.__rdioPrefs.miniOpacity) || 100;
+    var opBtn = pill('Opacity ' + curOp + '%', function () {
+      var i = steps.indexOf(curOp);
+      curOp = steps[(i + 1) % steps.length];
+      opBtn.textContent = 'Opacity ' + curOp + '%';
+      try {
+        if (window.__rdioPrefs) window.__rdioPrefs.miniOpacity = curOp;
+        window.__TAURI__.event.emit('rdio-mini-opacity', curOp);
+      } catch (e) {}
+    });
+    qm.appendChild(opBtn);
+    qm.appendChild(pill('Server', function () {
       closeQuick(); state.exit();
       window.location.href = 'http://tauri.localhost/index.html#edit';
     }));
@@ -1537,6 +1551,7 @@ fn main() {
                         let v: u32 = id[4..].parse().unwrap_or(100);
                         MINI_OPACITY.store(v, Ordering::SeqCst);
                         save_u32(app, "mini_opacity.txt", v);
+                        push_state(app);
                         let _ = refresh_tray_menu(app);
                     }
                     id if id.starts_with("corner:") => {
@@ -1607,6 +1622,18 @@ fn main() {
             let _tray = builder.build(app)?;
             let _ = refresh_tray_menu(app.handle());
             start_tick_thread(app.handle().clone());
+            // The mini player's own right-click menu changes its opacity by
+            // emitting this (only) event.
+            {
+                let h = app.handle().clone();
+                app.listen("rdio-mini-opacity", move |ev| {
+                    let v: u32 = ev.payload().trim().trim_matches('"').parse().unwrap_or(100);
+                    let v = v.clamp(30, 100);
+                    MINI_OPACITY.store(v, Ordering::SeqCst);
+                    save_u32(&h, "mini_opacity.txt", v);
+                    let _ = refresh_tray_menu(&h);
+                });
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
