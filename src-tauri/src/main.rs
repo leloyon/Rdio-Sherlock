@@ -571,7 +571,8 @@ const MINI_SCRIPT: &str = r##"(function () {
   function build() {
     overlay = document.createElement('div');
     overlay.id = 'rdio-mini';
-    overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483646;box-sizing:border-box;padding:12px 16px 12px 20px;display:flex;align-items:center;gap:14px;background:linear-gradient(135deg,#141a26 0%,#0d1119 100%);font-family:-apple-system,"Segoe UI",Roboto,sans-serif;color:#f2f5fa;overflow:hidden;';
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483646;box-sizing:border-box;padding:12px 16px 12px 20px;display:flex;align-items:center;gap:14px;background:linear-gradient(135deg,#141a26 0%,#0d1119 100%);font-family:-apple-system,"Segoe UI",Roboto,sans-serif;color:#f2f5fa;overflow:hidden;user-select:none;-webkit-user-select:none;cursor:default;';
+    overlay.setAttribute('data-tauri-drag-region', '');
     var kf = document.createElement('style');
     kf.id = 'rdio-mini-kf';
     kf.textContent = '@keyframes rdioPulse{0%,100%{opacity:.4}50%{opacity:1}}';
@@ -588,6 +589,7 @@ const MINI_SCRIPT: &str = r##"(function () {
     mainEl.style.cssText = 'font-size:20px;font-weight:600;letter-spacing:.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
     subEl = document.createElement('div');
     subEl.style.cssText = 'margin-top:3px;font-size:12px;color:#8e9bb0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+    [dot, col, mainEl, subEl].forEach(function (el) { el.setAttribute('data-tauri-drag-region', ''); });
     col.appendChild(mainEl); col.appendChild(subEl);
     var exp = document.createElement('button');
     exp.type = 'button';
@@ -646,7 +648,7 @@ const MINI_SCRIPT: &str = r##"(function () {
     closeQuick();
     if (!overlay) return;
     qm = document.createElement('div');
-    qm.style.cssText = 'position:absolute;inset:0;box-sizing:border-box;padding:28px 12px 12px;display:flex;flex-direction:column;gap:6px;justify-content:center;background:rgba(13,17,25,0.98);';
+    qm.style.cssText = 'position:absolute;inset:0;box-sizing:border-box;padding:28px 12px 12px;display:flex;flex-direction:column;gap:6px;justify-content:center;background:rgba(13,17,25,0.98);user-select:none;-webkit-user-select:none;';
     var row = document.createElement('div');
     row.style.cssText = 'display:flex;gap:8px;';
     var hint = document.createElement('div');
