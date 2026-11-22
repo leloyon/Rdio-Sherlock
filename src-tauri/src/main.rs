@@ -502,6 +502,7 @@ fn refresh_tray_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let show = MenuItem::with_id(app, "show", "Show", true, None::<&str>)?;
     let minimize = MenuItem::with_id(app, "minimize", "Minimize", true, None::<&str>)?;
     let server = MenuItem::with_id(app, "server", "Change server…", true, None::<&str>)?;
+    let audio = MenuItem::with_id(app, "audio", "Audio output…", true, None::<&str>)?;
     let mute = MenuItem::with_id(
         app,
         "mute",
@@ -529,7 +530,7 @@ fn refresh_tray_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
 
     let menu = Menu::with_items(
         app,
-        &[&show, &minimize, &server, &mute, &autostart, &keep_awake, &quit],
+        &[&show, &minimize, &server, &audio, &mute, &autostart, &keep_awake, &quit],
     )?;
     if let Some(tray) = app.tray_by_id("tray") {
         let _ = tray.set_menu(Some(menu));
@@ -839,6 +840,15 @@ fn main() {
                             let _ = window.eval(if muted { MUTE_JS } else { UNMUTE_JS });
                         }
                         let _ = refresh_tray_menu(app);
+                    }
+                    "audio" => {
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                            let _ = window.eval(
+                                "if(window.__rdioPickAudio){window.__rdioPickAudio();}",
+                            );
+                        }
                     }
                     "keep_awake" => {
                         let on = !KEEP_AWAKE.load(Ordering::SeqCst);
