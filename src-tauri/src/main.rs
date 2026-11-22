@@ -58,6 +58,86 @@ const PIN_SEED_SCRIPT: &str = r##"(function () {
   } catch (e) {}
 })();"##;
 
+/// "Keep PC awake": while on, Windows is asked not to go to sleep (the screen
+/// is NOT kept on, so the display can still turn off). Remembered in
+/// keep_awake.txt; on by default. A small thread re-asserts the request.
+static KEEP_AWAKE: AtomicBool = AtomicBool::new(true);
+
+fn keep_awake_path<R: Runtime>(app: &AppHandle<R>) -> Option<std::path::PathBuf> {
+    app.path().app_data_dir().ok().map(|d| d.join("keep_awake.txt"))
+}
+
+fn load_keep_awake<R: Runtime>(app: &AppHandle<R>) -> bool {
+    match keep_awake_path(app).and_then(|p| std::fs::read_to_string(p).ok()) {
+        Some(t) => t.trim() != "0",
+        None => true,
+    }
+}
+
+fn save_keep_awake<R: Runtime>(app: &AppHandle<R>, on: bool) {
+    if let Some(path) = keep_awake_path(app) {
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(path, if on { "1" } else { "0" });
+    }
+}
+
+#[cfg(windows)]
+mod winpower {
+    #[repr(C)]
+    struct ProcessPowerThrottlingState {
+        version: u32,
+        control_mask: u32,
+        state_mask: u32,
+    }
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn SetThreadExecutionState(flags: u32) -> u32;
+        fn GetCurrentProcess() -> isize;
+        fn SetProcessInformation(process: isize, class: i32, info: *mut core::ffi::c_void, size: u32) -> i32;
+    }
+    const ES_CONTINUOUS: u32 = 0x8000_0000;
+    const ES_SYSTEM_REQUIRED: u32 = 0x0000_0001;
+
+    pub fn set_awake(on: bool) {
+        unsafe {
+            SetThreadExecutionState(if on { ES_CONTINUOUS | ES_SYSTEM_REQUIRED } else { ES_CONTINUOUS });
+        }
+    }
+
+    /// Opt this process out of Windows "Efficiency mode" / execution-speed throttling.
+    pub fn opt_out_of_throttling() {
+        unsafe {
+            let mut st = ProcessPowerThrottlingState { version: 1, control_mask: 1, state_mask: 0 };
+            SetProcessInformation(
+                GetCurrentProcess(),
+                4, // ProcessPowerThrottling
+                &mut st as *mut _ as *mut core::ffi::c_void,
+                core::mem::size_of::<ProcessPowerThrottlingState>() as u32,
+            );
+        }
+    }
+}
+
+fn start_power_thread() {
+    #[cfg(windows)]
+    {
+        winpower::opt_out_of_throttling();
+        std::thread::spawn(|| loop {
+            // The execution state belongs to this thread, so it is set here
+            // (and refreshed) rather than from the menu handler.
+            winpower::set_awake(KEEP_AWAKE.load(Ordering::SeqCst));
+            std::thread::sleep(std::time::Duration::from_secs(20));
+        });
+    }
+}
+
+/// Pauses animations/transitions while the window is hidden in the tray
+/// (audio and the live title are untouched), and resumes them on show.
+const QUIET_JS: &str = r##"(function(){try{if(document.getElementById('rdio-quiet'))return;var s=document.createElement('style');s.id='rdio-quiet';s.textContent='*,*::before,*::after{animation-play-state:paused!important;transition:none!important;}';(document.head||document.documentElement).appendChild(s);}catch(e){}})();"##;
+const UNQUIET_JS: &str = r##"(function(){try{var s=document.getElementById('rdio-quiet');if(s)s.remove();}catch(e){}})();"##;
+
 /// Audio output selection (Bluetooth speaker etc.). Runs before the page's own
 /// scripts: tracks every AudioContext the scanner creates so the chosen output
 /// device can be applied with setSinkId, and exposes window.__rdioPickAudio()
@@ -437,9 +517,20 @@ fn refresh_tray_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         autostart_enabled(),
         None::<&str>,
     )?;
+    let keep_awake = CheckMenuItem::with_id(
+        app,
+        "keep_awake",
+        "Keep PC awake (screen can still turn off)",
+        true,
+        KEEP_AWAKE.load(Ordering::SeqCst),
+        None::<&str>,
+    )?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
 
-    let menu = Menu::with_items(app, &[&show, &minimize, &server, &mute, &autostart, &quit])?;
+    let menu = Menu::with_items(
+        app,
+        &[&show, &minimize, &server, &mute, &autostart, &keep_awake, &quit],
+    )?;
     if let Some(tray) = app.tray_by_id("tray") {
         let _ = tray.set_menu(Some(menu));
     }
@@ -685,6 +776,8 @@ fn main() {
             }
         }))
         .setup(|app| {
+            KEEP_AWAKE.store(load_keep_awake(app.handle()), Ordering::SeqCst);
+            start_power_thread();
             #[allow(unused_mut)]
             let mut wb = WebviewWindowBuilder::new(
                 app,
@@ -698,7 +791,7 @@ fn main() {
             .initialization_script(PIN_SEED_SCRIPT);
             #[cfg(windows)]
             {
-                let mut args = String::from("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection");
+                let mut args = String::from("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,CalculateNativeWinOcclusion --disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows --renderer-process-limit=1");
                 if let Some(origin) = load_secure_origin(app.handle()) {
                     args.push_str(&format!(" --unsafely-treat-insecure-origin-as-secure={}", origin));
                 }
@@ -747,6 +840,12 @@ fn main() {
                         }
                         let _ = refresh_tray_menu(app);
                     }
+                    "keep_awake" => {
+                        let on = !KEEP_AWAKE.load(Ordering::SeqCst);
+                        KEEP_AWAKE.store(on, Ordering::SeqCst);
+                        save_keep_awake(app, on);
+                        let _ = refresh_tray_menu(app);
+                    }
                     "autostart" => {
                         set_autostart(!autostart_enabled());
                         let _ = refresh_tray_menu(app);
@@ -782,7 +881,11 @@ fn main() {
                 WindowEvent::CloseRequested { api, .. } => {
                     save_window_geometry(window);
                     let _ = window.hide();
+                    let _ = window.eval(QUIET_JS);
                     api.prevent_close();
+                }
+                WindowEvent::Focused(true) => {
+                    let _ = window.eval(UNQUIET_JS);
                 }
                 WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
                     save_window_geometry(window);
