@@ -1242,7 +1242,7 @@ fn refresh_tray_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let crefs: Vec<&dyn IsMenuItem<R>> = corner_items.iter().map(|i| i as &dyn IsMenuItem<R>).collect();
     let corner_menu = Submenu::with_items(app, "Opens in", true, &crefs)?;
     let popup = CheckMenuItem::with_id(app, "popup", "Pop-up mode (only show during calls)", true, POPUP.load(Ordering::SeqCst), None::<&str>)?;
-    let start_mini = CheckMenuItem::with_id(app, "start_mini", "Start in mini player", true, START_MINI.load(Ordering::SeqCst), None::<&str>)?;
+    let start_mini = CheckMenuItem::with_id(app, "start_mini", "Launch as mini player (instead of full window)", true, START_MINI.load(Ordering::SeqCst), None::<&str>)?;
     let mini_menu = Submenu::with_items(app, "Mini player", true, &[&mini as &dyn IsMenuItem<R>, &popup, &start_mini, &opa_menu, &corner_menu])?;
 
     let audio = MenuItem::with_id(app, "audio", "Audio output…", true, None::<&str>)?;
@@ -1667,6 +1667,12 @@ fn main() {
                         let on = !POPUP.load(Ordering::SeqCst);
                         POPUP.store(on, Ordering::SeqCst);
                         save_flag(app, "popup.txt", on);
+                        if !on {
+                            // turning pop-up mode off brings a hidden mini player back
+                            if let Some(w) = app.get_webview_window("main") {
+                                let _ = w.show();
+                            }
+                        }
                         let _ = refresh_tray_menu(app);
                     }
                     "auto_live" => {
