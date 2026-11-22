@@ -63,6 +63,29 @@ const PIN_SEED_SCRIPT: &str = r##"(function () {
 /// keep_awake.txt; on by default. A small thread re-asserts the request.
 static KEEP_AWAKE: AtomicBool = AtomicBool::new(true);
 
+/// "Start minimized to tray": when on, the app starts hidden in the tray.
+static START_HIDDEN: AtomicBool = AtomicBool::new(false);
+
+fn flag_path<R: Runtime>(app: &AppHandle<R>, name: &str) -> Option<std::path::PathBuf> {
+    app.path().app_data_dir().ok().map(|d| d.join(name))
+}
+
+fn load_flag<R: Runtime>(app: &AppHandle<R>, name: &str, default: bool) -> bool {
+    match flag_path(app, name).and_then(|p| std::fs::read_to_string(p).ok()) {
+        Some(t) => t.trim() == "1",
+        None => default,
+    }
+}
+
+fn save_flag<R: Runtime>(app: &AppHandle<R>, name: &str, on: bool) {
+    if let Some(path) = flag_path(app, name) {
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(path, if on { "1" } else { "0" });
+    }
+}
+
 fn keep_awake_path<R: Runtime>(app: &AppHandle<R>) -> Option<std::path::PathBuf> {
     app.path().app_data_dir().ok().map(|d| d.join("keep_awake.txt"))
 }
@@ -137,6 +160,143 @@ fn start_power_thread() {
 /// (audio and the live title are untouched), and resumes them on show.
 const QUIET_JS: &str = r##"(function(){try{if(document.getElementById('rdio-quiet'))return;var s=document.createElement('style');s.id='rdio-quiet';s.textContent='*,*::before,*::after{animation-play-state:paused!important;transition:none!important;}';(document.head||document.documentElement).appendChild(s);}catch(e){}})();"##;
 const UNQUIET_JS: &str = r##"(function(){try{var s=document.getElementById('rdio-quiet');if(s)s.remove();}catch(e){}})();"##;
+
+/// Compact "mini player": the window shrinks to a small always-on-top card
+/// that shows the current talkgroup. Toggled from the right-click menu or the
+/// tray; remembered across launches (per server).
+const MINI_SCRIPT: &str = r##"(function () {
+  if (window.__rdioMini) return;
+  var KEY = 'rdio-sherlock-mini';
+  var PREV = 'rdio-sherlock-mini-prev';
+  var W = 380, H = 108;
+  var state = { on: false };
+  window.__rdioMini = state;
+  var overlay = null, mainEl = null, subEl = null, dot = null, timer = null;
+  var lastCall = '';
+  function api() {
+    try {
+      var t = window.__TAURI__;
+      return (t && t.window && t.window.getCurrentWindow) ? t : null;
+    } catch (e) { return null; }
+  }
+  function Logical(w, h) {
+    var t = window.__TAURI__;
+    var C = (t.dpi && t.dpi.LogicalSize) || t.window.LogicalSize;
+    return new C(w, h);
+  }
+  function read() {
+    var disp = document.querySelector('.rdio-display');
+    var big = disp ? disp.querySelector('.row.big span') : null;
+    var name = big ? (big.textContent || '').trim() : '';
+    if (!name || /^rdio scanner/i.test(name)) return null;
+    var label = '', tgid = '';
+    try {
+      var rows = disp.querySelectorAll('.row');
+      var cell = rows[3] && rows[3].querySelector('div span');
+      if (cell) label = (cell.textContent || '').trim();
+      var m = (rows[5] ? rows[5].textContent || '' : '').match(/TGID:\s*(\d+)/);
+      if (m) tgid = m[1];
+    } catch (e) {}
+    return { name: name, sub: [tgid ? 'TGID ' + tgid : '', (label && label !== name) ? label : ''].filter(Boolean).join('  ·  ') };
+  }
+  function update() {
+    if (!overlay) return;
+    var c = read();
+    if (c) {
+      mainEl.textContent = c.name;
+      subEl.textContent = c.sub || 'Receiving';
+      dot.style.background = '#3fb950';
+      dot.style.boxShadow = '0 0 10px #3fb950';
+      lastCall = c.name + ' · ' + new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    } else {
+      mainEl.textContent = 'Listening…';
+      subEl.textContent = lastCall ? 'Last: ' + lastCall : 'Waiting for calls';
+      dot.style.background = '#566070';
+      dot.style.boxShadow = 'none';
+    }
+  }
+  function build() {
+    overlay = document.createElement('div');
+    overlay.id = 'rdio-mini';
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483646;box-sizing:border-box;padding:34px 16px 12px 20px;display:flex;align-items:center;gap:14px;background:linear-gradient(135deg,#141a26 0%,#0d1119 100%);font-family:-apple-system,"Segoe UI",Roboto,sans-serif;color:#f2f5fa;overflow:hidden;';
+    dot = document.createElement('div');
+    dot.style.cssText = 'flex:none;width:12px;height:12px;border-radius:50%;background:#566070;transition:background .3s,box-shadow .3s;';
+    var col = document.createElement('div');
+    col.style.cssText = 'flex:1;min-width:0;';
+    mainEl = document.createElement('div');
+    mainEl.style.cssText = 'font-size:20px;font-weight:600;letter-spacing:.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+    subEl = document.createElement('div');
+    subEl.style.cssText = 'margin-top:3px;font-size:12px;color:#8e9bb0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+    col.appendChild(mainEl); col.appendChild(subEl);
+    var exp = document.createElement('button');
+    exp.type = 'button';
+    exp.textContent = '⤢';
+    exp.title = 'Back to full view';
+    exp.style.cssText = 'flex:none;width:34px;height:34px;border:1px solid rgba(255,255,255,0.14);border-radius:9px;background:rgba(255,255,255,0.06);color:#dfe6f1;font-size:18px;line-height:1;cursor:pointer;';
+    exp.addEventListener('mouseenter', function () { exp.style.background = 'rgba(255,255,255,0.14)'; });
+    exp.addEventListener('mouseleave', function () { exp.style.background = 'rgba(255,255,255,0.06)'; });
+    exp.addEventListener('click', function () { state.exit(); });
+    overlay.appendChild(dot); overlay.appendChild(col); overlay.appendChild(exp);
+    (document.body || document.documentElement).appendChild(overlay);
+    update();
+    timer = setInterval(update, 700);
+  }
+  function resizeTo(w, h) {
+    var t = api();
+    if (!t) return;
+    try { var p = t.window.getCurrentWindow().setSize(Logical(w, h)); if (p && p.catch) p.catch(function () {}); } catch (e) {}
+  }
+  function onTop(on) {
+    var t = api();
+    if (!t) return;
+    try { var p = t.window.getCurrentWindow().setAlwaysOnTop(on); if (p && p.catch) p.catch(function () {}); } catch (e) {}
+  }
+  state.enter = function () {
+    if (state.on) return;
+    var t = api();
+    var go = function () {
+      state.on = true;
+      try { localStorage.setItem(KEY, '1'); } catch (e) {}
+      if (!overlay) build();
+      resizeTo(W, H);
+      onTop(true);
+    };
+    if (!t) { go(); return; }
+    // remember the normal size so leaving mini mode can restore it
+    try {
+      var win = t.window.getCurrentWindow();
+      Promise.all([win.innerSize(), win.scaleFactor()]).then(function (r) {
+        var lw = Math.round(r[0].width / r[1]), lh = Math.round(r[0].height / r[1]);
+        if (lw > W + 40 && lh > H + 40) {
+          try { localStorage.setItem(PREV, lw + 'x' + lh); } catch (e) {}
+        }
+        go();
+      }, go);
+    } catch (e) { go(); }
+  };
+  state.exit = function () {
+    state.on = false;
+    try { localStorage.removeItem(KEY); } catch (e) {}
+    if (timer) { clearInterval(timer); timer = null; }
+    if (overlay) { overlay.remove(); overlay = null; }
+    var w = 1280, h = 800;
+    try {
+      var m = (localStorage.getItem(PREV) || '').match(/^(\d+)x(\d+)$/);
+      if (m) { w = +m[1]; h = +m[2]; }
+    } catch (e) {}
+    resizeTo(w, h);
+    onTop(false);
+  };
+  state.toggle = function () { if (state.on) state.exit(); else state.enter(); };
+  function init() {
+    var saved = false;
+    try { saved = localStorage.getItem(KEY) === '1'; } catch (e) {}
+    if (saved && document.querySelector('.rdio-display, app-rdio-scanner, rdio-scanner')) {
+      state.on = false; state.enter();
+    }
+  }
+  document.addEventListener('DOMContentLoaded', function () { setTimeout(init, 800); });
+})();"##;
 
 /// Audio output selection (Bluetooth speaker etc.). Runs before the page's own
 /// scripts: tracks every AudioContext the scanner creates so the chosen output
@@ -469,8 +629,9 @@ const INIT_SCRIPT: &str = r##"(function () {
     ctxMenu = document.createElement('div');
     ctxMenu.style.cssText = 'position:fixed;z-index:2147483647;background:#1e1e24;border:1px solid rgba(255,255,255,0.16);border-radius:8px;padding:4px;min-width:170px;box-shadow:0 10px 28px rgba(0,0,0,0.5);font-family:-apple-system,"Segoe UI",Roboto,sans-serif;';
     ctxMenu.style.left = Math.min(e.clientX, window.innerWidth - 190) + 'px';
-    ctxMenu.style.top = Math.min(e.clientY, window.innerHeight - 150) + 'px';
+    ctxMenu.style.top = Math.min(e.clientY, window.innerHeight - 190) + 'px';
     ctxMenu.appendChild(mkCtxItem('Change server…', function () {
+      if (window.__rdioMini && window.__rdioMini.on) window.__rdioMini.exit();
       window.location.href = 'http://tauri.localhost/index.html#edit';
     }));
     ctxMenu.appendChild(mkCtxItem((alwaysOnTop ? '✓ ' : '') + 'Always on top', function () {
@@ -481,6 +642,9 @@ const INIT_SCRIPT: &str = r##"(function () {
         var p = a.getCurrentWindow().setAlwaysOnTop(alwaysOnTop);
         if (p && p.catch) p.catch(function () {});
       } catch (err) {}
+    }));
+    ctxMenu.appendChild(mkCtxItem(window.__rdioMini && window.__rdioMini.on ? 'Full view' : 'Mini player', function () {
+      if (window.__rdioMini) window.__rdioMini.toggle();
     }));
     ctxMenu.appendChild(mkCtxItem('Audio output\u2026', function () {
       if (window.__rdioPickAudio) window.__rdioPickAudio();
@@ -501,6 +665,15 @@ fn refresh_tray_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
 
     let server = MenuItem::with_id(app, "server", "Change server…", true, None::<&str>)?;
     let audio = MenuItem::with_id(app, "audio", "Audio output…", true, None::<&str>)?;
+    let mini = MenuItem::with_id(app, "mini", "Mini player", true, None::<&str>)?;
+    let start_hidden = CheckMenuItem::with_id(
+        app,
+        "start_hidden",
+        "Start minimized to tray",
+        true,
+        START_HIDDEN.load(Ordering::SeqCst),
+        None::<&str>,
+    )?;
     let mute = MenuItem::with_id(
         app,
         "mute",
@@ -528,7 +701,7 @@ fn refresh_tray_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
 
     let menu = Menu::with_items(
         app,
-        &[&server, &audio, &mute, &autostart, &keep_awake, &quit],
+        &[&server, &audio, &mini, &mute, &autostart, &start_hidden, &keep_awake, &quit],
     )?;
     if let Some(tray) = app.tray_by_id("tray") {
         let _ = tray.set_menu(Some(menu));
@@ -707,7 +880,7 @@ fn load_geometry<R: Runtime>(app: &AppHandle<R>) -> Option<Geometry> {
         w: get("w")?,
         h: get("h")?,
     };
-    if g.w >= 400.0 && g.h >= 300.0 && g.x.abs() < 10000.0 && g.y.abs() < 10000.0 {
+    if g.w >= 300.0 && g.h >= 80.0 && g.x.abs() < 10000.0 && g.y.abs() < 10000.0 {
         Some(g)
     } else {
         None
@@ -776,6 +949,7 @@ fn main() {
         }))
         .setup(|app| {
             KEEP_AWAKE.store(load_keep_awake(app.handle()), Ordering::SeqCst);
+            START_HIDDEN.store(load_flag(app.handle(), "start_hidden.txt", false), Ordering::SeqCst);
             start_power_thread();
             #[allow(unused_mut)]
             let mut wb = WebviewWindowBuilder::new(
@@ -787,6 +961,8 @@ fn main() {
             .decorations(false)
             .initialization_script(INIT_SCRIPT)
             .initialization_script(AUDIO_SCRIPT)
+            .initialization_script(MINI_SCRIPT)
+            .visible(!START_HIDDEN.load(Ordering::SeqCst))
             .initialization_script(PIN_SEED_SCRIPT);
             #[cfg(windows)]
             {
@@ -827,7 +1003,7 @@ fn main() {
                             // Windows serves app pages at
                             // http://tauri.localhost/.
                             let _ = window.eval(
-                                "window.location.href='http://tauri.localhost/index.html#edit';",
+                                "if(window.__rdioMini&&window.__rdioMini.on){window.__rdioMini.exit();}window.location.href='http://tauri.localhost/index.html#edit';",
                             );
                         }
                     }
@@ -847,6 +1023,19 @@ fn main() {
                                 "if(window.__rdioPickAudio){window.__rdioPickAudio();}",
                             );
                         }
+                    }
+                    "mini" => {
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                            let _ = window.eval("if(window.__rdioMini){window.__rdioMini.toggle();}");
+                        }
+                    }
+                    "start_hidden" => {
+                        let on = !START_HIDDEN.load(Ordering::SeqCst);
+                        START_HIDDEN.store(on, Ordering::SeqCst);
+                        save_flag(app, "start_hidden.txt", on);
+                        let _ = refresh_tray_menu(app);
                     }
                     "keep_awake" => {
                         let on = !KEEP_AWAKE.load(Ordering::SeqCst);

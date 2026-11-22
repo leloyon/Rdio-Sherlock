@@ -53,7 +53,7 @@
   <div class="card">
     <div id="connecting" class="hidden">
       <div class="srv" id="connecting-server"></div>
-      <div class="note">Connecting…</div>
+      <div class="note" id="connecting-note">Connecting…</div>
       <div class="row">
         <button type="button" class="ghost" id="change-btn">Change server</button>
       </div>
@@ -124,6 +124,28 @@
     window.location.href = server + '/#rdioPin=' + encodeURIComponent(b64);
   }
 
+  // If the server can't be reached (for example the PC started before the
+  // server did), keep checking every 30 seconds instead of leaving the app
+  // on a browser error page; open the scanner as soon as it answers.
+  function reachable(server, cb) {
+    var ctl = null, t = null;
+    try { ctl = new AbortController(); t = setTimeout(function () { ctl.abort(); }, 6000); } catch (e) {}
+    fetch(server + '/', { mode: 'no-cors', cache: 'no-store', signal: ctl ? ctl.signal : undefined })
+      .then(function () { if (t) clearTimeout(t); cb(true); },
+            function () { if (t) clearTimeout(t); cb(false); });
+  }
+  function connectWhenReady(server, code) {
+    var note = document.getElementById('connecting-note');
+    reachable(server, function (ok) {
+      if (ok) { go(server, code); return; }
+      if (note) note.textContent = 'Server not reachable. Trying again in 30 seconds\u2026';
+      timer = setTimeout(function () {
+        if (note) note.textContent = 'Connecting\u2026';
+        connectWhenReady(server, code);
+      }, 30000);
+    });
+  }
+
   form.addEventListener('submit', function (e) {
     e.preventDefault();
     var server = normalizeServer(serverInput.value);
@@ -162,7 +184,7 @@
       document.getElementById('connecting-server').textContent = saved.server;
       form.classList.add('hidden');
       connecting.classList.remove('hidden');
-      timer = setTimeout(function () { go(saved.server, saved.code || ''); }, 2000);
+      timer = setTimeout(function () { connectWhenReady(saved.server, saved.code || ''); }, 2000);
     }
   }
 })();
