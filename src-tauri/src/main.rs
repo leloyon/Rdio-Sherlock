@@ -76,6 +76,12 @@ static MINI_STARTED: AtomicBool = AtomicBool::new(false);
 /// during a call and fades away shortly after.
 static POPUP: AtomicBool = AtomicBool::new(false);
 static POPUP_HOLD: Mutex<Option<Instant>> = Mutex::new(None);
+
+fn hold_popup(secs: u64) {
+    if let Ok(mut g) = POPUP_HOLD.lock() {
+        *g = Some(Instant::now() + std::time::Duration::from_secs(secs));
+    }
+}
 static MINI_OPACITY: AtomicU32 = AtomicU32::new(100);
 static MINI_CORNER: AtomicU32 = AtomicU32::new(0);
 static EFFECTIVE_MUTE: AtomicBool = AtomicBool::new(false);
@@ -693,16 +699,6 @@ const MINI_SCRIPT: &str = r##"(function () {
       } catch (e) {}
     });
     row.appendChild(opBtn);
-    var popOn = !!(window.__rdioPrefs && window.__rdioPrefs.popup);
-    var popBtn = pill('Pop-up: ' + (popOn ? 'On' : 'Off'), function () {
-      popOn = !popOn;
-      popBtn.textContent = 'Pop-up: ' + (popOn ? 'On' : 'Off');
-      try {
-        if (window.__rdioPrefs) window.__rdioPrefs.popup = popOn;
-        window.__TAURI__.event.emit('rdio-mini-popup', popOn);
-      } catch (e) {}
-    });
-    row.appendChild(popBtn);
     qm.appendChild(row);
     qm.appendChild(hint);
     qm.addEventListener('click', closeQuick);
@@ -721,6 +717,19 @@ const MINI_SCRIPT: &str = r##"(function () {
     st.textContent = '#rdio-strip-btns,#rdio-mini-btn{display:none!important;}';
     (document.head || document.documentElement).appendChild(st);
   }
+  var curH = H;
+  function emitHold(on) {
+    try { window.__TAURI__.event.emit('rdio-popup-hold', on); } catch (e) {}
+  }
+  // Panels such as the audio output list need more room than the mini card:
+  // the window grows while one is open (and a pop-up window is kept on
+  // screen), then shrinks back when it is closed.
+  state.expand = function (on) {
+    curH = on ? 320 : H;
+    resizeTo(W, curH);
+    emitHold(on);
+    setTimeout(toCorner, 200);
+  };
   function toCorner() {
     var t = api();
     var corner = (window.__rdioPrefs && window.__rdioPrefs.miniCorner) || 0;
@@ -730,7 +739,7 @@ const MINI_SCRIPT: &str = r##"(function () {
       var sx = window.screen.availLeft || 0, sy = window.screen.availTop || 0;
       var sw = window.screen.availWidth, sh = window.screen.availHeight, m = 12;
       var x = (corner === 2 || corner === 4) ? sx + sw - W - m : sx + m;
-      var y = (corner === 3 || corner === 4) ? sy + sh - H - m : sy + m;
+      var y = (corner === 3 || corner === 4) ? sy + sh - curH - m : sy + m;
       var p = t.window.getCurrentWindow().setPosition(new C(x, y));
       if (p && p.catch) p.catch(function () {});
     } catch (e) {}
@@ -861,7 +870,15 @@ const AUDIO_SCRIPT: &str = r##"(function () {
     document.querySelectorAll('audio,video').forEach(applyEl);
   }
   var panel = null;
-  function closePanel() { if (panel) { panel.remove(); panel = null; } }
+  var expanded = false;
+  function removePanel() { if (panel) { panel.remove(); panel = null; } }
+  function closePanel() {
+    removePanel();
+    if (expanded) {
+      expanded = false;
+      try { window.__rdioMini.expand(false); } catch (e) {}
+    }
+  }
   function row(label, active, onClick) {
     var el = document.createElement('div');
     el.textContent = (active ? '✓ ' : '') + label;
@@ -878,7 +895,11 @@ const AUDIO_SCRIPT: &str = r##"(function () {
     return el;
   }
   function show(devices, msg) {
-    closePanel();
+    removePanel();
+    if (window.__rdioMini && window.__rdioMini.on && !expanded && window.__rdioMini.expand) {
+      expanded = true;
+      window.__rdioMini.expand(true);
+    }
     panel = document.createElement('div');
     panel.style.cssText = 'position:fixed;z-index:2147483647;left:50%;top:60px;transform:translateX(-50%);background:#1e1e24;border:1px solid rgba(255,255,255,0.16);border-radius:8px;padding:6px;min-width:260px;max-height:70vh;overflow:auto;box-shadow:0 10px 28px rgba(0,0,0,0.5);font-family:-apple-system,"Segoe UI",Roboto,sans-serif;';
     if (window.__rdioMini && window.__rdioMini.on) {
@@ -1723,6 +1744,7 @@ fn main() {
                         let _ = refresh_tray_menu(app);
                     }
                     "audio" => {
+                        hold_popup(30);
                         if let Some(window) = app.get_webview_window("main") {
                             let _ = window.show();
                             let _ = window.set_focus();
@@ -1732,6 +1754,7 @@ fn main() {
                         }
                     }
                     "mini" => {
+                        hold_popup(20);
                         if let Some(window) = app.get_webview_window("main") {
                             let _ = window.show();
                             let _ = window.set_focus();
@@ -1794,6 +1817,13 @@ fn main() {
                         }
                     }
                     let _ = refresh_tray_menu(&h2);
+                });
+                app.listen("rdio-popup-hold", move |ev| {
+                    if ev.payload().trim().trim_matches('"') == "true" {
+                        hold_popup(600);
+                    } else {
+                        hold_popup(5);
+                    }
                 });
                 app.listen("rdio-mini-opacity", move |ev| {
                     let v: u32 = ev.payload().trim().trim_matches('"').parse().unwrap_or(100);
