@@ -673,13 +673,14 @@ const MINI_SCRIPT: &str = r##"(function () {
     if (state.on) { e.stopImmediatePropagation(); e.preventDefault(); }
   }, true);
   var qm = null;
-  function closeQuick() { if (qm) { qm.remove(); qm = null; } }
+  function closeQuick() { if (qm) { qm.remove(); qm = null; emitHold(false); } }
   // The normal right-click menu is taller than the mini window, so the mini
   // player shows a compact row of the few things that make sense here.
   function quickMenu() {
     closeQuick();
     if (!overlay) return;
     qm = document.createElement('div');
+    emitHold(true);
     qm.style.cssText = 'position:absolute;inset:0;box-sizing:border-box;padding:28px 12px 12px;display:flex;flex-direction:column;gap:6px;justify-content:center;background:rgba(13,17,25,0.98);user-select:none;-webkit-user-select:none;';
     var row = document.createElement('div');
     row.style.cssText = 'display:flex;gap:8px;';
@@ -1787,9 +1788,7 @@ fn main() {
                     } = event
                     {
                         let app = tray.app_handle();
-                        if let Ok(mut g) = POPUP_HOLD.lock() {
-                            *g = Some(Instant::now() + std::time::Duration::from_secs(20));
-                        }
+                        hold_popup(10);
                         if let Some(window) = app.get_webview_window("main") {
                             let _ = window.show();
                             let _ = window.set_focus();
