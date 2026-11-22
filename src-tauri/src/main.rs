@@ -9,11 +9,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Mutex;
 use std::time::Instant;
 use tauri::{
-    menu::{CheckMenuItem, Menu, MenuItem},
+    menu::{CheckMenuItem, IsMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu},
     tray::{MouseButton, TrayIconBuilder, TrayIconEvent},
     AppHandle, Manager, Runtime, WebviewUrl, WebviewWindowBuilder, Window, WindowEvent,
 };
@@ -22,8 +22,8 @@ static MUTED: AtomicBool = AtomicBool::new(false);
 
 /// Mute every audio/video element now, and keep muting new ones (rdio-scanner
 /// creates elements per call) until unmuted.
-const MUTE_JS: &str = r##"(function(){window.__rdioMuted=true;function m(n){if(n.tagName==='AUDIO'||n.tagName==='VIDEO')n.muted=true;if(n.querySelectorAll)n.querySelectorAll('audio,video').forEach(function(e){e.muted=true;});}m(document);if(!window.__rdioMuteObs){window.__rdioMuteObs=new MutationObserver(function(muts){if(!window.__rdioMuted)return;muts.forEach(function(mu){mu.addedNodes.forEach(function(n){if(n.nodeType===1)m(n);});});});window.__rdioMuteObs.observe(document.documentElement,{childList:true,subtree:true});}})();"##;
-const UNMUTE_JS: &str = r##"(function(){window.__rdioMuted=false;document.querySelectorAll('audio,video').forEach(function(e){e.muted=false;});})();"##;
+const MUTE_JS: &str = r##"(function(){window.__rdioMuted=true;if(window.__rdioSetMuted)window.__rdioSetMuted(true);function m(n){if(n.tagName==='AUDIO'||n.tagName==='VIDEO')n.muted=true;if(n.querySelectorAll)n.querySelectorAll('audio,video').forEach(function(e){e.muted=true;});}m(document);if(!window.__rdioMuteObs){window.__rdioMuteObs=new MutationObserver(function(muts){if(!window.__rdioMuted)return;muts.forEach(function(mu){mu.addedNodes.forEach(function(n){if(n.nodeType===1)m(n);});});});window.__rdioMuteObs.observe(document.documentElement,{childList:true,subtree:true});}})();"##;
+const UNMUTE_JS: &str = r##"(function(){window.__rdioMuted=false;if(window.__rdioSetMuted)window.__rdioSetMuted(false);document.querySelectorAll('audio,video').forEach(function(e){e.muted=false;});})();"##;
 
 /// Runs before the page's own scripts on every load. The setup page hands
 /// the access code over in the URL fragment (#rdioPin=<base64>); the
@@ -65,6 +65,241 @@ static KEEP_AWAKE: AtomicBool = AtomicBool::new(true);
 
 /// "Start minimized to tray": when on, the app starts hidden in the tray.
 static START_HIDDEN: AtomicBool = AtomicBool::new(false);
+
+static AUTO_LIVE: AtomicBool = AtomicBool::new(true);
+static MINI_OPACITY: AtomicU32 = AtomicU32::new(100);
+static MINI_CORNER: AtomicU32 = AtomicU32::new(0);
+static EFFECTIVE_MUTE: AtomicBool = AtomicBool::new(false);
+static SNOOZE_UNTIL: Mutex<Option<Instant>> = Mutex::new(None);
+/// Quiet hours as (start, end) minutes after midnight, or None when off.
+/// The source of truth is quiet_hours.txt ("22:00-06:00" or "off").
+static QUIET: Mutex<Option<(u32, u32)>> = Mutex::new(None);
+
+fn parse_quiet(text: &str) -> Option<(u32, u32)> {
+    let t = text.trim();
+    let (a, b) = t.split_once('-')?;
+    let hm = |x: &str| -> Option<u32> {
+        let (h, m) = x.trim().split_once(':')?;
+        let h: u32 = h.trim().parse().ok()?;
+        let m: u32 = m.trim().parse().ok()?;
+        if h < 24 && m < 60 { Some(h * 60 + m) } else { None }
+    };
+    let (s, e) = (hm(a)?, hm(b)?);
+    if s == e { None } else { Some((s, e)) }
+}
+
+fn quiet_text<R: Runtime>(app: &AppHandle<R>) -> String {
+    flag_path(app, "quiet_hours.txt")
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .map(|t| t.trim().to_string())
+        .unwrap_or_else(|| "off".to_string())
+}
+
+fn reload_quiet<R: Runtime>(app: &AppHandle<R>) {
+    let q = parse_quiet(&quiet_text(app));
+    if let Ok(mut g) = QUIET.lock() {
+        *g = q;
+    }
+}
+
+fn set_quiet_text<R: Runtime>(app: &AppHandle<R>, text: &str) {
+    if let Some(path) = flag_path(app, "quiet_hours.txt") {
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(path, text);
+    }
+    reload_quiet(app);
+}
+
+fn quiet_now() -> bool {
+    let q = match QUIET.lock() {
+        Ok(g) => *g,
+        Err(_) => None,
+    };
+    match q {
+        Some((s, e)) => {
+            let now = local_minutes();
+            if s < e { now >= s && now < e } else { now >= s || now < e }
+        }
+        None => false,
+    }
+}
+
+fn snoozed() -> bool {
+    if let Ok(mut g) = SNOOZE_UNTIL.lock() {
+        if let Some(t) = *g {
+            if t > Instant::now() {
+                return true;
+            }
+            *g = None;
+        }
+    }
+    false
+}
+
+fn snooze_minutes_left() -> u64 {
+    if let Ok(g) = SNOOZE_UNTIL.lock() {
+        if let Some(t) = *g {
+            let now = Instant::now();
+            if t > now {
+                return (t - now).as_secs() / 60 + 1;
+            }
+        }
+    }
+    0
+}
+
+fn local_minutes() -> u32 {
+    #[cfg(windows)]
+    {
+        winpower::local_minutes()
+    }
+    #[cfg(not(windows))]
+    {
+        0
+    }
+}
+
+fn fmt_clock(m: u32) -> String {
+    let h24 = m / 60;
+    let min = m % 60;
+    let suffix = if h24 < 12 { "AM" } else { "PM" };
+    let h = match h24 % 12 { 0 => 12, x => x };
+    if min == 0 {
+        if h24 == 0 { "Midnight".to_string() } else { format!("{} {}", h, suffix) }
+    } else {
+        format!("{}:{:02} {}", h, min, suffix)
+    }
+}
+
+/// Re-evaluates whether audio should be muted (manual mute, snooze or quiet
+/// hours) and pushes the change into the page when it differs.
+fn sync_mute<R: Runtime>(app: &AppHandle<R>) -> bool {
+    let eff = MUTED.load(Ordering::SeqCst) || snoozed() || quiet_now();
+    let prev = EFFECTIVE_MUTE.swap(eff, Ordering::SeqCst);
+    if prev != eff {
+        if let Some(w) = app.get_webview_window("main") {
+            let _ = w.eval(if eff { MUTE_JS } else { UNMUTE_JS });
+        }
+    }
+    prev != eff
+}
+
+/// Sends the settings the page needs (auto Live Feed, mini corner) and the
+/// current mute state; also run after every page load.
+fn push_state<R: Runtime>(app: &AppHandle<R>) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.eval(&format!(
+            "window.__rdioPrefs={{autoLive:{},miniCorner:{}}};",
+            AUTO_LIVE.load(Ordering::SeqCst),
+            MINI_CORNER.load(Ordering::SeqCst)
+        ));
+        if EFFECTIVE_MUTE.load(Ordering::SeqCst) {
+            let _ = w.eval(MUTE_JS);
+        }
+    }
+}
+
+fn load_u32<R: Runtime>(app: &AppHandle<R>, name: &str, default: u32) -> u32 {
+    flag_path(app, name)
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|t| t.trim().parse().ok())
+        .unwrap_or(default)
+}
+
+fn save_u32<R: Runtime>(app: &AppHandle<R>, name: &str, v: u32) {
+    if let Some(path) = flag_path(app, name) {
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(path, v.to_string());
+    }
+}
+
+/// Tray icon with a small status dot: green = a call is playing, red = muted
+/// or snoozed, blue = quiet hours.
+fn status_icon<R: Runtime>(app: &AppHandle<R>, state: u32) -> Option<tauri::image::Image<'static>> {
+    let base = app.default_window_icon()?;
+    let (w, h) = (base.width(), base.height());
+    let mut px = base.rgba().to_vec();
+    let color: [u8; 3] = match state {
+        1 => [63, 185, 80],
+        2 => [248, 81, 73],
+        3 => [88, 166, 255],
+        _ => return Some(tauri::image::Image::new_owned(px, w, h)),
+    };
+    let r = ((w.min(h) as f32) * 0.24).max(4.0);
+    let (cx, cy) = (w as f32 - r - 1.0, h as f32 - r - 1.0);
+    for y in 0..h {
+        for x in 0..w {
+            let d = (((x as f32 - cx).powi(2) + (y as f32 - cy).powi(2))).sqrt();
+            if d <= r {
+                let i = ((y * w + x) * 4) as usize;
+                let c = if d > r - 1.6 { [20u8, 20, 24] } else { color };
+                px[i] = c[0];
+                px[i + 1] = c[1];
+                px[i + 2] = c[2];
+                px[i + 3] = 255;
+            }
+        }
+    }
+    Some(tauri::image::Image::new_owned(px, w, h))
+}
+
+/// Background loop: applies snooze/quiet-hours, keeps the tray icon status
+/// and the mini-player opacity up to date.
+fn start_tick_thread<R: Runtime>(app: AppHandle<R>) {
+    std::thread::spawn(move || {
+        let mut n: u64 = 0;
+        let mut last_icon: u32 = 99;
+        let mut last_sig: (bool, bool, bool) = (false, false, false);
+        let mut last_alpha: i32 = -1;
+        loop {
+            if n % 5 == 0 {
+                reload_quiet(&app);
+            }
+            n += 1;
+            let changed = sync_mute(&app);
+            let sn = snoozed();
+            let qn = quiet_now();
+            let sig = (sn, qn, MUTED.load(Ordering::SeqCst));
+            if changed || sig != last_sig {
+                last_sig = sig;
+                let _ = refresh_tray_menu(&app);
+            }
+            // tray icon status
+            let active = app
+                .get_webview_window("main")
+                .and_then(|w| w.title().ok())
+                .map(|t| t != "Rdio Sherlock")
+                .unwrap_or(false);
+            let state = if sig.2 || sn { 2 } else if qn { 3 } else if active { 1 } else { 0 };
+            if state != last_icon {
+                last_icon = state;
+                if let (Some(tray), Some(img)) = (app.tray_by_id("tray"), status_icon(&app, state)) {
+                    let _ = tray.set_icon(Some(img));
+                }
+            }
+            // mini player opacity (window narrower than ~450 logical px)
+            #[cfg(windows)]
+            if let Some(w) = app.get_webview_window("main") {
+                if let (Ok(size), Ok(sf)) = (w.inner_size(), w.scale_factor()) {
+                    let mini = (size.width as f64 / sf) < 450.0;
+                    let pct = MINI_OPACITY.load(Ordering::SeqCst).clamp(30, 100) as i32;
+                    let alpha = if mini { pct * 255 / 100 } else { 255 };
+                    if alpha != last_alpha {
+                        if let Ok(h) = w.hwnd() {
+                            winpower::set_alpha(h.0 as isize, alpha as u8);
+                            last_alpha = alpha;
+                        }
+                    }
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        }
+    });
+}
 
 fn flag_path<R: Runtime>(app: &AppHandle<R>, name: &str) -> Option<std::path::PathBuf> {
     app.path().app_data_dir().ok().map(|d| d.join(name))
@@ -120,6 +355,47 @@ mod winpower {
         fn GetCurrentProcess() -> isize;
         fn SetProcessInformation(process: isize, class: i32, info: *mut core::ffi::c_void, size: u32) -> i32;
     }
+    #[repr(C)]
+    struct SystemTime {
+        year: u16,
+        month: u16,
+        dow: u16,
+        day: u16,
+        hour: u16,
+        minute: u16,
+        second: u16,
+        ms: u16,
+    }
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetLocalTime(st: *mut SystemTime);
+    }
+    #[link(name = "user32")]
+    extern "system" {
+        fn GetWindowLongPtrW(hwnd: isize, index: i32) -> isize;
+        fn SetWindowLongPtrW(hwnd: isize, index: i32, value: isize) -> isize;
+        fn SetLayeredWindowAttributes(hwnd: isize, key: u32, alpha: u8, flags: u32) -> i32;
+    }
+
+    pub fn local_minutes() -> u32 {
+        unsafe {
+            let mut st = SystemTime { year: 0, month: 0, dow: 0, day: 0, hour: 0, minute: 0, second: 0, ms: 0 };
+            GetLocalTime(&mut st);
+            st.hour as u32 * 60 + st.minute as u32
+        }
+    }
+
+    /// Whole-window opacity (used for the mini player).
+    pub fn set_alpha(hwnd: isize, alpha: u8) {
+        unsafe {
+            let ex = GetWindowLongPtrW(hwnd, -20);
+            if ex & 0x0008_0000 == 0 {
+                SetWindowLongPtrW(hwnd, -20, ex | 0x0008_0000);
+            }
+            SetLayeredWindowAttributes(hwnd, 0, alpha, 2);
+        }
+    }
+
     const ES_CONTINUOUS: u32 = 0x8000_0000;
     const ES_SYSTEM_REQUIRED: u32 = 0x0000_0001;
 
@@ -173,6 +449,8 @@ const MINI_SCRIPT: &str = r##"(function () {
   window.__rdioMini = state;
   var overlay = null, mainEl = null, subEl = null, dot = null, timer = null;
   var lastCall = '';
+  var recent = [];
+  var curName = '';
   function api() {
     try {
       var t = window.__TAURI__;
@@ -201,6 +479,7 @@ const MINI_SCRIPT: &str = r##"(function () {
   }
   function update() {
     if (!overlay) return;
+    overlay.title = recent.length ? 'Recent calls\n' + recent.join('\n') : 'No calls heard yet';
     var c = read();
     if (c) {
       mainEl.textContent = c.name;
@@ -251,6 +530,20 @@ const MINI_SCRIPT: &str = r##"(function () {
     if (!t) return;
     try { var p = t.window.getCurrentWindow().setAlwaysOnTop(on); if (p && p.catch) p.catch(function () {}); } catch (e) {}
   }
+  function toCorner() {
+    var t = api();
+    var corner = (window.__rdioPrefs && window.__rdioPrefs.miniCorner) || 0;
+    if (!t || !corner) return;
+    try {
+      var C = (t.dpi && t.dpi.LogicalPosition) || t.window.LogicalPosition;
+      var sx = window.screen.availLeft || 0, sy = window.screen.availTop || 0;
+      var sw = window.screen.availWidth, sh = window.screen.availHeight, m = 12;
+      var x = (corner === 2 || corner === 4) ? sx + sw - W - m : sx + m;
+      var y = (corner === 3 || corner === 4) ? sy + sh - H - m : sy + m;
+      var p = t.window.getCurrentWindow().setPosition(new C(x, y));
+      if (p && p.catch) p.catch(function () {});
+    } catch (e) {}
+  }
   state.enter = function () {
     if (state.on) return;
     var t = api();
@@ -260,6 +553,7 @@ const MINI_SCRIPT: &str = r##"(function () {
       if (!overlay) build();
       resizeTo(W, H);
       onTop(true);
+      setTimeout(toCorner, 150);
     };
     if (!t) { go(); return; }
     // remember the normal size so leaving mini mode can restore it
@@ -298,6 +592,38 @@ const MINI_SCRIPT: &str = r##"(function () {
   document.addEventListener('DOMContentLoaded', function () { setTimeout(init, 800); });
 })();"##;
 
+/// Presses Live Feed by itself after the scanner page has loaded (when the
+/// tray option is on), once per page load. A synthetic mouse event first lets
+/// the scanner create its audio context, the same way a real click would.
+const AUTO_SCRIPT: &str = r##"(function () {
+  if (window.__rdioAuto) return;
+  window.__rdioAuto = true;
+  var tries = 0, done = false, timer = null;
+  function findBtn() {
+    var bs = document.querySelectorAll('button.rdio-button');
+    for (var i = 0; i < bs.length; i++) {
+      if (/live\s*feed/i.test(bs[i].textContent || '')) return bs[i];
+    }
+    return null;
+  }
+  function attempt() {
+    if (done) return;
+    var prefs = window.__rdioPrefs;
+    if (!prefs || !prefs.autoLive) return;
+    var b = findBtn();
+    if (!b) return;
+    if (b.classList.contains('on')) { done = true; return; }
+    done = true;
+    try { document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); } catch (e) {}
+    setTimeout(function () { if (!b.classList.contains('on')) b.click(); }, 600);
+  }
+  timer = setInterval(function () {
+    tries++;
+    attempt();
+    if (done || tries > 120) clearInterval(timer);
+  }, 1000);
+})();"##;
+
 /// Audio output selection (Bluetooth speaker etc.). Runs before the page's own
 /// scripts: tracks every AudioContext the scanner creates so the chosen output
 /// device can be applied with setSinkId, and exposes window.__rdioPickAudio()
@@ -307,6 +633,10 @@ const AUDIO_SCRIPT: &str = r##"(function () {
   window.__rdioAudio = true;
   var KEY = 'rdio-sherlock-audio-sink';
   var contexts = [];
+  var masters = [];
+  window.__rdioSetMuted = function (on) {
+    masters.forEach(function (m) { try { m.gain.value = on ? 0 : 1; } catch (e) {} });
+  };
   function saved() { try { return localStorage.getItem(KEY) || ''; } catch (e) { return ''; } }
   function applyCtx(c) {
     var id = saved();
@@ -321,6 +651,16 @@ const AUDIO_SCRIPT: &str = r##"(function () {
     if (!Orig) return;
     var Wrapped = function (opts) {
       var c = new Orig(opts);
+      // Route everything through one master gain so the app can mute the
+      // scanner's audio (tray Mute, Snooze, Quiet hours) reliably.
+      try {
+        var real = c.destination;
+        var master = c.createGain();
+        master.gain.value = window.__rdioMuted ? 0 : 1;
+        master.connect(real);
+        Object.defineProperty(c, 'destination', { value: master, configurable: true });
+        masters.push(master);
+      } catch (e) {}
       contexts.push(c);
       applyCtx(c);
       return c;
@@ -662,46 +1002,115 @@ const INIT_SCRIPT: &str = r##"(function () {
 
 fn refresh_tray_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let muted = MUTED.load(Ordering::SeqCst);
+    let sep = |a: &AppHandle<R>| PredefinedMenuItem::separator(a);
+
+    let mute = MenuItem::with_id(app, "mute", if muted { "Unmute" } else { "Mute" }, true, None::<&str>)?;
+
+    // Snooze
+    let left = snooze_minutes_left();
+    let snooze_title = if left > 0 { format!("Snooze (on, {} min left)", left) } else { "Snooze".to_string() };
+    let sn15 = MenuItem::with_id(app, "snooze_15", "Mute for 15 minutes", true, None::<&str>)?;
+    let sn30 = MenuItem::with_id(app, "snooze_30", "Mute for 30 minutes", true, None::<&str>)?;
+    let sn60 = MenuItem::with_id(app, "snooze_60", "Mute for 1 hour", true, None::<&str>)?;
+    let sn120 = MenuItem::with_id(app, "snooze_120", "Mute for 2 hours", true, None::<&str>)?;
+    let snoff = MenuItem::with_id(app, "snooze_off", "Cancel snooze", left > 0, None::<&str>)?;
+    let sn_sep = sep(app)?;
+    let snooze_menu = Submenu::with_items(
+        app,
+        snooze_title,
+        true,
+        &[&sn15 as &dyn IsMenuItem<R>, &sn30, &sn60, &sn120, &sn_sep, &snoff],
+    )?;
+
+    // Quiet hours
+    let cur = quiet_text(app);
+    let curq = parse_quiet(&cur);
+    let presets: [(&str, &str); 5] = [
+        ("21:00-06:00", "9 PM – 6 AM"),
+        ("22:00-06:00", "10 PM – 6 AM"),
+        ("23:00-07:00", "11 PM – 7 AM"),
+        ("00:00-06:00", "Midnight – 6 AM"),
+        ("00:00-08:00", "Midnight – 8 AM"),
+    ];
+    let q_off = CheckMenuItem::with_id(app, "quiet_off", "Off", true, curq.is_none(), None::<&str>)?;
+    let mut q_items: Vec<CheckMenuItem<R>> = Vec::new();
+    let mut matched = curq.is_none();
+    for (val, label) in presets.iter() {
+        let on = parse_quiet(val) == curq && curq.is_some();
+        if on { matched = true; }
+        q_items.push(CheckMenuItem::with_id(app, format!("quiet:{}", val), *label, true, on, None::<&str>)?);
+    }
+    let custom_label = match (curq, matched) {
+        (Some((s, e)), false) => format!("Custom: {} – {} (edit file…)", fmt_clock(s), fmt_clock(e)),
+        _ => "Custom (edit file…)".to_string(),
+    };
+    let q_custom = CheckMenuItem::with_id(app, "quiet_custom", custom_label, true, curq.is_some() && !matched, None::<&str>)?;
+    let q_sep = sep(app)?;
+    let mut qrefs: Vec<&dyn IsMenuItem<R>> = vec![&q_off];
+    for it in q_items.iter() {
+        qrefs.push(it);
+    }
+    qrefs.push(&q_sep);
+    qrefs.push(&q_custom);
+    let quiet_title = match curq {
+        Some((s, e)) => format!("Quiet hours ({} – {})", fmt_clock(s), fmt_clock(e)),
+        None => "Quiet hours".to_string(),
+    };
+    let quiet_menu = Submenu::with_items(app, quiet_title, true, &qrefs)?;
+
+    // Mini player
+    let mini = MenuItem::with_id(app, "mini", "Show / hide mini player", true, None::<&str>)?;
+    let opa = MINI_OPACITY.load(Ordering::SeqCst);
+    let mut opa_items: Vec<CheckMenuItem<R>> = Vec::new();
+    for v in [100u32, 85, 70, 50] {
+        opa_items.push(CheckMenuItem::with_id(app, format!("opa:{}", v), format!("{}%", v), true, opa == v, None::<&str>)?);
+    }
+    let orefs: Vec<&dyn IsMenuItem<R>> = opa_items.iter().map(|i| i as &dyn IsMenuItem<R>).collect();
+    let opa_menu = Submenu::with_items(app, "Opacity", true, &orefs)?;
+    let corner = MINI_CORNER.load(Ordering::SeqCst);
+    let mut corner_items: Vec<CheckMenuItem<R>> = Vec::new();
+    for (v, label) in [(0u32, "Don't move it"), (1, "Top left"), (2, "Top right"), (3, "Bottom left"), (4, "Bottom right")] {
+        corner_items.push(CheckMenuItem::with_id(app, format!("corner:{}", v), label, true, corner == v, None::<&str>)?);
+    }
+    let crefs: Vec<&dyn IsMenuItem<R>> = corner_items.iter().map(|i| i as &dyn IsMenuItem<R>).collect();
+    let corner_menu = Submenu::with_items(app, "Opens in", true, &crefs)?;
+    let mini_menu = Submenu::with_items(app, "Mini player", true, &[&mini as &dyn IsMenuItem<R>, &opa_menu, &corner_menu])?;
+
+    let audio = MenuItem::with_id(app, "audio", "Audio output…", true, None::<&str>)?;
+
+    // Startup & power
+    let autostart = CheckMenuItem::with_id(app, "autostart", "Start on login", true, autostart_enabled(), None::<&str>)?;
+    let start_hidden = CheckMenuItem::with_id(app, "start_hidden", "Start minimized to tray", true, START_HIDDEN.load(Ordering::SeqCst), None::<&str>)?;
+    let auto_live = CheckMenuItem::with_id(app, "auto_live", "Start Live Feed automatically", true, AUTO_LIVE.load(Ordering::SeqCst), None::<&str>)?;
+    let keep_awake = CheckMenuItem::with_id(app, "keep_awake", "Keep PC awake (screen can still turn off)", true, KEEP_AWAKE.load(Ordering::SeqCst), None::<&str>)?;
+    let startup_menu = Submenu::with_items(
+        app,
+        "Startup & power",
+        true,
+        &[&autostart as &dyn IsMenuItem<R>, &start_hidden, &auto_live, &keep_awake],
+    )?;
 
     let server = MenuItem::with_id(app, "server", "Change server…", true, None::<&str>)?;
-    let audio = MenuItem::with_id(app, "audio", "Audio output…", true, None::<&str>)?;
-    let mini = MenuItem::with_id(app, "mini", "Mini player", true, None::<&str>)?;
-    let start_hidden = CheckMenuItem::with_id(
-        app,
-        "start_hidden",
-        "Start minimized to tray",
-        true,
-        START_HIDDEN.load(Ordering::SeqCst),
-        None::<&str>,
-    )?;
-    let mute = MenuItem::with_id(
-        app,
-        "mute",
-        if muted { "Unmute" } else { "Mute" },
-        true,
-        None::<&str>,
-    )?;
-    let autostart = CheckMenuItem::with_id(
-        app,
-        "autostart",
-        "Start on login",
-        true,
-        autostart_enabled(),
-        None::<&str>,
-    )?;
-    let keep_awake = CheckMenuItem::with_id(
-        app,
-        "keep_awake",
-        "Keep PC awake (screen can still turn off)",
-        true,
-        KEEP_AWAKE.load(Ordering::SeqCst),
-        None::<&str>,
-    )?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+    let s1 = sep(app)?;
+    let s2 = sep(app)?;
+    let s3 = sep(app)?;
 
     let menu = Menu::with_items(
         app,
-        &[&server, &audio, &mini, &mute, &autostart, &start_hidden, &keep_awake, &quit],
+        &[
+            &mute as &dyn IsMenuItem<R>,
+            &snooze_menu,
+            &quiet_menu,
+            &s1,
+            &mini_menu,
+            &audio,
+            &s2,
+            &startup_menu,
+            &server,
+            &s3,
+            &quit,
+        ],
     )?;
     if let Some(tray) = app.tray_by_id("tray") {
         let _ = tray.set_menu(Some(menu));
@@ -939,6 +1348,7 @@ fn main() {
         .on_page_load(|webview, payload| {
             if let tauri::webview::PageLoadEvent::Finished = payload.event() {
                 note_server_origin(webview.app_handle(), payload.url());
+                push_state(webview.app_handle());
             }
         })
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -950,6 +1360,10 @@ fn main() {
         .setup(|app| {
             KEEP_AWAKE.store(load_keep_awake(app.handle()), Ordering::SeqCst);
             START_HIDDEN.store(load_flag(app.handle(), "start_hidden.txt", false), Ordering::SeqCst);
+            AUTO_LIVE.store(load_flag(app.handle(), "auto_live.txt", true), Ordering::SeqCst);
+            MINI_OPACITY.store(load_u32(app.handle(), "mini_opacity.txt", 100), Ordering::SeqCst);
+            MINI_CORNER.store(load_u32(app.handle(), "mini_corner.txt", 0), Ordering::SeqCst);
+            reload_quiet(app.handle());
             start_power_thread();
             #[allow(unused_mut)]
             let mut wb = WebviewWindowBuilder::new(
@@ -962,11 +1376,12 @@ fn main() {
             .initialization_script(INIT_SCRIPT)
             .initialization_script(AUDIO_SCRIPT)
             .initialization_script(MINI_SCRIPT)
+            .initialization_script(AUTO_SCRIPT)
             .visible(!START_HIDDEN.load(Ordering::SeqCst))
             .initialization_script(PIN_SEED_SCRIPT);
             #[cfg(windows)]
             {
-                let mut args = String::from("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,CalculateNativeWinOcclusion --disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows --renderer-process-limit=1");
+                let mut args = String::from("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,CalculateNativeWinOcclusion --disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows --renderer-process-limit=1 --autoplay-policy=no-user-gesture-required");
                 if let Some(origin) = load_secure_origin(app.handle()) {
                     args.push_str(&format!(" --unsafely-treat-insecure-origin-as-secure={}", origin));
                 }
@@ -1010,9 +1425,61 @@ fn main() {
                     "mute" => {
                         let muted = !MUTED.load(Ordering::SeqCst);
                         MUTED.store(muted, Ordering::SeqCst);
-                        if let Some(window) = app.get_webview_window("main") {
-                            let _ = window.eval(if muted { MUTE_JS } else { UNMUTE_JS });
+                        sync_mute(app);
+                        let _ = refresh_tray_menu(app);
+                    }
+                    "snooze_off" => {
+                        if let Ok(mut g) = SNOOZE_UNTIL.lock() {
+                            *g = None;
                         }
+                        sync_mute(app);
+                        let _ = refresh_tray_menu(app);
+                    }
+                    id if id.starts_with("snooze_") => {
+                        let mins: u64 = id[7..].parse().unwrap_or(15);
+                        if let Ok(mut g) = SNOOZE_UNTIL.lock() {
+                            *g = Some(Instant::now() + std::time::Duration::from_secs(mins * 60));
+                        }
+                        sync_mute(app);
+                        let _ = refresh_tray_menu(app);
+                    }
+                    "quiet_off" => {
+                        set_quiet_text(app, "off");
+                        sync_mute(app);
+                        let _ = refresh_tray_menu(app);
+                    }
+                    "quiet_custom" => {
+                        if parse_quiet(&quiet_text(app)).is_none() {
+                            set_quiet_text(app, "22:00-06:00");
+                        }
+                        if let Some(path) = flag_path(app, "quiet_hours.txt") {
+                            let _ = Command::new("notepad").arg(path).spawn();
+                        }
+                        let _ = refresh_tray_menu(app);
+                    }
+                    id if id.starts_with("quiet:") => {
+                        set_quiet_text(app, &id[6..]);
+                        sync_mute(app);
+                        let _ = refresh_tray_menu(app);
+                    }
+                    id if id.starts_with("opa:") => {
+                        let v: u32 = id[4..].parse().unwrap_or(100);
+                        MINI_OPACITY.store(v, Ordering::SeqCst);
+                        save_u32(app, "mini_opacity.txt", v);
+                        let _ = refresh_tray_menu(app);
+                    }
+                    id if id.starts_with("corner:") => {
+                        let v: u32 = id[7..].parse().unwrap_or(0);
+                        MINI_CORNER.store(v, Ordering::SeqCst);
+                        save_u32(app, "mini_corner.txt", v);
+                        push_state(app);
+                        let _ = refresh_tray_menu(app);
+                    }
+                    "auto_live" => {
+                        let on = !AUTO_LIVE.load(Ordering::SeqCst);
+                        AUTO_LIVE.store(on, Ordering::SeqCst);
+                        save_flag(app, "auto_live.txt", on);
+                        push_state(app);
                         let _ = refresh_tray_menu(app);
                     }
                     "audio" => {
@@ -1068,6 +1535,7 @@ fn main() {
             }
             let _tray = builder.build(app)?;
             let _ = refresh_tray_menu(app.handle());
+            start_tick_thread(app.handle().clone());
             Ok(())
         })
         .on_window_event(|window, event| {
