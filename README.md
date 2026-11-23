@@ -7,21 +7,35 @@ Point it at **any** rdio-scanner server, enter the access code if that server us
 ![Platform: Windows](https://img.shields.io/badge/platform-Windows-blue) ![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri%202-orange)
 
 
-<p align="center">
-  <img src=""https://github.com/user-attachments/assets/e921151f-3e56-4321-bd25-b2f2670d2790"" width="722" hspace="15" />
-  <img src="image2.png" width="250" hspace="15" />
-</p>
+<h2 align="center">Screenshots</h2>
 
-<img width="722" height="569" alt="2026-11-21 08_45_51-Greenshot" src="https://github.com/user-attachments/assets/e921151f-3e56-4321-bd25-b2f2670d2790" />
+<table align="center">
+  <tr>
+    <td align="center" width="50%">
+      <img src="https://github.com/user-attachments/assets/704a3190-fefa-433a-b23b-1b80d810a270" alt="Rdio Sherlock main window" width="100%">
+      <br><sub><b>Main window</b><br>The scanner, in its own app window</sub>
+    </td>
+    <td align="center" width="50%">
+      <img src="https://github.com/user-attachments/assets/e921151f-3e56-4321-bd25-b2f2670d2790" alt="Rdio Sherlock window" width="100%">
+      <br><sub><b>Full view</b><br>Everything you need in one place</sub>
+    </td>
+  </tr>
+</table>
 
-<img width="722" height="569" alt="2026-11-21 08_43_24-Rdio Sherlock" src="https://github.com/user-attachments/assets/704a3190-fefa-433a-b23b-1b80d810a270" />
+<br>
 
-<img width="169" height="157" alt="2026-11-21 08_34_16-" src="https://github.com/user-attachments/assets/677c51ac-2336-4d6c-8c1c-8036c3990af1" />
-
-
-
-<img width="383" height="108" alt="Mini Player" src="https://github.com/user-attachments/assets/0b5988a5-8293-4de0-8b07-d954cef845be" />
-
+<table align="center">
+  <tr>
+    <td align="center" valign="bottom" width="35%">
+      <img src="https://github.com/user-attachments/assets/677c51ac-2336-4d6c-8c1c-8036c3990af1" alt="Tray icon" width="169">
+      <br><sub><b>Tray icon</b><br>Status dot shows what's happening</sub>
+    </td>
+    <td align="center" valign="bottom" width="65%">
+      <img src="https://github.com/user-attachments/assets/0b5988a5-8293-4de0-8b07-d954cef845be" alt="Mini player" width="383">
+      <br><sub><b>Mini player</b><br>A compact card that stays on top</sub>
+    </td>
+  </tr>
+</table>
 
 ## Features
 
