@@ -437,6 +437,21 @@ mod winpower {
         }
     }
 
+    #[link(name = "dwmapi")]
+    extern "system" {
+        fn DwmSetWindowAttribute(hwnd: isize, attr: u32, value: *const core::ffi::c_void, size: u32) -> i32;
+    }
+
+    /// Windows 11 draws a thin border that changes when the window loses
+    /// focus. Pin it to one dark colour so the window looks the same either
+    /// way (ignored on older Windows).
+    pub fn pin_border_color(hwnd: isize) {
+        unsafe {
+            let color: u32 = 0x0032_241E; // COLORREF 0x00BBGGRR
+            DwmSetWindowAttribute(hwnd, 34, &color as *const u32 as *const core::ffi::c_void, 4);
+        }
+    }
+
     /// Whole-window opacity (used for the mini player).
     pub fn set_alpha(hwnd: isize, alpha: u8) {
         unsafe {
@@ -784,6 +799,11 @@ const MINI_SCRIPT: &str = r##"(function () {
     resizeTo(w, h);
     onTop(false);
     skipTaskbar(false);
+    setTimeout(function () {
+      var t = api();
+      if (!t) return;
+      try { var p = t.window.getCurrentWindow().center(); if (p && p.catch) p.catch(function () {}); } catch (e) {}
+    }, 250);
   };
   state.toggle = function () { if (state.on) state.exit(); else state.enter(); };
 })();"##;
@@ -827,6 +847,15 @@ const AUTO_SCRIPT: &str = r##"(function () {
 const AUDIO_SCRIPT: &str = r##"(function () {
   if (window.__rdioAudio) return;
   window.__rdioAudio = true;
+  // Never show the browser's "Leave site?" prompt (for example when changing server).
+  try {
+    var addL = EventTarget.prototype.addEventListener;
+    EventTarget.prototype.addEventListener = function (t, l, o) {
+      if (t === 'beforeunload') return;
+      return addL.call(this, t, l, o);
+    };
+    Object.defineProperty(window, 'onbeforeunload', { get: function () { return null; }, set: function () {}, configurable: true });
+  } catch (e) {}
   var KEY = 'rdio-sherlock-audio-sink';
   var contexts = [];
   var masters = [];
@@ -1635,6 +1664,10 @@ fn main() {
                 wb = wb.inner_size(1280.0, 800.0);
             }
             let _main = wb.build()?;
+            #[cfg(windows)]
+            if let Ok(h) = _main.hwnd() {
+                winpower::pin_border_color(h.0 as isize);
+            }
 
             let mut builder = TrayIconBuilder::with_id("tray")
                 .tooltip("Rdio Sherlock")
