@@ -782,8 +782,9 @@ const MINI_SCRIPT: &str = r##"(function () {
       var C = (t.dpi && t.dpi.LogicalPosition) || t.window.LogicalPosition;
       var sx = window.screen.availLeft || 0, sy = window.screen.availTop || 0;
       var sw = window.screen.availWidth, sh = window.screen.availHeight, m = 12;
-      var x = (corner === 2 || corner === 4) ? sx + sw - W - m : sx + m;
-      var y = (corner === 3 || corner === 4) ? sy + sh - curH - m : sy + m;
+      var x = (corner === 5 || corner === 6) ? sx + Math.round((sw - W) / 2)
+        : (corner === 2 || corner === 4) ? sx + sw - W - m : sx + m;
+      var y = (corner === 3 || corner === 4 || corner === 6) ? sy + sh - curH - m : sy + m;
       var p = t.window.getCurrentWindow().setPosition(new C(x, y));
       if (p && p.catch) p.catch(function () {});
     } catch (e) {}
@@ -1363,7 +1364,7 @@ fn refresh_tray_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let opa_menu = Submenu::with_items(app, "Opacity", true, &orefs)?;
     let corner = MINI_CORNER.load(Ordering::SeqCst);
     let mut corner_items: Vec<CheckMenuItem<R>> = Vec::new();
-    for (v, label) in [(0u32, "Don't move it"), (1, "Top left"), (2, "Top right"), (3, "Bottom left"), (4, "Bottom right")] {
+    for (v, label) in [(0u32, "Don't move it"), (1, "Top left"), (5, "Top center"), (2, "Top right"), (3, "Bottom left"), (6, "Bottom center"), (4, "Bottom right")] {
         corner_items.push(CheckMenuItem::with_id(app, format!("corner:{}", v), label, true, corner == v, None::<&str>)?);
     }
     let crefs: Vec<&dyn IsMenuItem<R>> = corner_items.iter().map(|i| i as &dyn IsMenuItem<R>).collect();
