@@ -4,6 +4,8 @@ A small, portable Windows desktop player for [rdio-scanner](https://github.com/c
 
 Point it at **any** rdio-scanner server, enter the access code if that server uses one, and it just plays. Your server is remembered on that machine, so after the first setup it connects on its own every launch.
 
+And yes, before anyone complains - this app was coded primarily by AI, but has been thoroughly tested by me over a monthly period. That will always be the case before any new updates go live, to make sure each function works as it should without any abnormal effects to the system. Linux and Mac builds go untested however. So use them at your own risk. 
+
 ![Platform: Windows](https://img.shields.io/badge/platform-Windows-blue) ![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri%202-orange)
 
 
