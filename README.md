@@ -17,7 +17,7 @@ Point it at **any** rdio-scanner server, enter the access code if that server us
     </td>
     <td align="center" width="50%">
       <img src="https://github.com/user-attachments/assets/e921151f-3e56-4321-bd25-b2f2670d2790" alt="Rdio Sherlock window" width="100%">
-      <br><sub><b>Full view</b><br>Everything you need in one place</sub>
+      <br><sub><b>Login Screen</b>
     </td>
   </tr>
 </table>
@@ -25,11 +25,6 @@ Point it at **any** rdio-scanner server, enter the access code if that server us
 <br>
 
 <table align="center">
-  <tr>
-    <td align="center" valign="bottom" width="35%">
-      <img src="https://github.com/user-attachments/assets/677c51ac-2336-4d6c-8c1c-8036c3990af1" alt="Tray icon" width="169">
-      <br><sub><b>Tray icon</b><br>Status dot shows what's happening</sub>
-    </td>
     <td align="center" valign="bottom" width="65%">
       <img src="https://github.com/user-attachments/assets/0b5988a5-8293-4de0-8b07-d954cef845be" alt="Mini player" width="383">
       <br><sub><b>Mini player</b><br>A compact card that stays on top</sub>
