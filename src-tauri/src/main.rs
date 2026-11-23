@@ -351,7 +351,9 @@ fn start_tick_thread<R: Runtime>(app: AppHandle<R>) {
                         }
                     }
                     let alpha = (base * fade).round().clamp(0.0, 255.0) as i32;
-                    if alpha != last_alpha {
+                    // Re-apply regularly as well as on change: hiding and
+                    // showing the window (pop-up mode) can reset its opacity.
+                    if alpha != last_alpha || n % 5 == 0 {
                         if let Some(h) = hwnd {
                             winpower::set_alpha(h, alpha as u8);
                             last_alpha = alpha;
