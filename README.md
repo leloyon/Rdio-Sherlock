@@ -36,13 +36,10 @@ Point it at **any** rdio-scanner server, enter the access code if that server us
 
 - **Bring your own server** — a setup screen takes any rdio-scanner server address plus an optional access code, and remembers it per machine
 - **Lives in the tray** — closing the window tucks the app into the system tray and the audio keeps playing; single-instance, so launching it again just brings the window back
-- **Live taskbar title** — while a call plays, the window title shows the talkgroup: `26274 — Jackson County Sheriff (JCSO)`. When the call ends it goes back to `Rdio Sherlock`
+- **Mini-player** — a compact notification-style box showing the current call. Change the opacity and leave it sit, drag it wherever you want, or enable pop-up mode and it will only appear during active calls.
 - **Last call in the tray tooltip** — hover the tray icon while idle to see the last talkgroup heard and when
-- **Drag it from anywhere** — press and drag any non-interactive part of the window to move it (buttons, sliders and controls still work normally; the drag only engages once the pointer actually moves)
-- **Custom right-click menu** — the browser menu is replaced with **Change server…** and **Always on top**
 - **Start on login** — an optional tray-menu checkbox registers the app with Windows startup
-- **Remembers its window** — size and position are restored on the next launch
-- **Tray controls** — Show, Minimize, Change server…, Mute, Start on login, Quit
+- **Tray controls** — Mute, Snooze, Quiet hours, Mini player, Audio output, Startup options, Change server.
 
 ## Using it
 
@@ -55,7 +52,7 @@ To point it at a different server later, use **Change server…** from the tray 
 
 Drag/resize to your liking. Double-clicking the main display in rdio-scanner will fullscreen the application. Double-clicking the top near the -/X buttons will maximize the window.
 
-This application uses the same layout as a typical rdio-scanner server would if you typed it into the web browser. Be sure to check out my Rdio-Scanner fork for some themes, statistics page, and various QoL Features. - [here](https://github.com/leloyon/rdio-scanner).
+This application uses the same layout as a typical rdio-scanner server would if you typed it into the web browser. Be sure to check out **my Rdio-Scanner fork** for some themes, statistics page, and various QoL Features. - [here](https://github.com/leloyon/rdio-scanner).
 
 ### A note on sleep
 
