@@ -796,14 +796,23 @@ const MINI_SCRIPT: &str = r##"(function () {
       var m = (localStorage.getItem(PREV) || '').match(/^(\d+)x(\d+)$/);
       if (m) { w = +m[1]; h = +m[2]; }
     } catch (e) {}
-    resizeTo(w, h);
+    // size and position are set together, so the window lands centred at
+    // once instead of resizing first and moving afterwards
+    var t = api();
+    if (t) {
+      try {
+        var win = t.window.getCurrentWindow();
+        var sx = window.screen.availLeft || 0, sy = window.screen.availTop || 0;
+        var pw = Math.min(w, window.screen.availWidth), ph = Math.min(h, window.screen.availHeight);
+        var PC = (t.dpi && t.dpi.LogicalPosition) || t.window.LogicalPosition;
+        var p1 = win.setPosition(new PC(Math.round(sx + (window.screen.availWidth - pw) / 2), Math.round(sy + (window.screen.availHeight - ph) / 2)));
+        if (p1 && p1.catch) p1.catch(function () {});
+        var p2 = win.setSize(Logical(pw, ph));
+        if (p2 && p2.catch) p2.catch(function () {});
+      } catch (e) { resizeTo(w, h); }
+    }
     onTop(false);
     skipTaskbar(false);
-    setTimeout(function () {
-      var t = api();
-      if (!t) return;
-      try { var p = t.window.getCurrentWindow().center(); if (p && p.catch) p.catch(function () {}); } catch (e) {}
-    }, 250);
   };
   state.toggle = function () { if (state.on) state.exit(); else state.enter(); };
 })();"##;
