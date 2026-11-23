@@ -81,6 +81,7 @@ The executable lands in `src-tauri/target/release/` (`rdio-scanner-anywhere.exe`
 
 Rdio Sherlock is a thin [Tauri 2](https://tauri.app) shell around the rdio-scanner web client:
 
+- WYSIWYG. If you run my [custom rdio-scanner fork](https://github.com/leloyon/rdio-scanner), expect to also get the volume slider and themes.
 - The bundled page in `dist/` is the setup screen and the config store (kept in the app's local storage)
 - On connect, the app navigates to your server and seeds the client's stored access code (`localStorage` key `rdio-scanner-pin`, base64 — the same storage the rdio-scanner client itself uses in v6.6.x and v8)
 - The window chrome — a slim drag strip with minimize/close, the whole-window drag, the right-click menu, and the live title — is injected into the page by the Rust side
