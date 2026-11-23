@@ -12,6 +12,7 @@ Point it at **any** rdio-scanner server, enter the access code if that server us
 
 <img width="169" height="157" alt="2026-11-21 08_34_16-" src="https://github.com/user-attachments/assets/677c51ac-2336-4d6c-8c1c-8036c3990af1" />
 
+<img width="383" height="108" alt="Mini Player" src="https://github.com/user-attachments/assets/0b5988a5-8293-4de0-8b07-d954cef845be" />
 
 
 ## Features
