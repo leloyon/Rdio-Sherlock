@@ -275,14 +275,19 @@ fn start_tick_thread<R: Runtime>(app: AppHandle<R>) {
         let mut last_alpha: i32 = -1;
         let mut last_active = Instant::now();
         let mut fade: f32 = 1.0;
+        let mut nolink = false;
+        let mut active = false;
+        // The loop runs every 50 ms so window fades are smooth; the slower
+        // jobs (title, mute, tray icon) run every 250 ms.
         loop {
             let win = app.get_webview_window("main");
-            let title = win.as_ref().and_then(|w| w.title().ok()).unwrap_or_default();
-            let nolink = title.ends_with("(no link)");
-            let active = !nolink && title != "Rdio Sherlock" && !title.is_empty();
 
-            if n % 4 == 0 {
-                if n % 20 == 0 {
+            if n % 5 == 0 {
+                let title = win.as_ref().and_then(|w| w.title().ok()).unwrap_or_default();
+                nolink = title.ends_with("(no link)");
+                active = !nolink && title != "Rdio Sherlock" && !title.is_empty();
+
+                if n % 100 == 0 {
                     reload_quiet(&app);
                 }
                 let changed = sync_mute(&app);
@@ -313,42 +318,48 @@ fn start_tick_thread<R: Runtime>(app: AppHandle<R>) {
             if let Some(w) = win.as_ref() {
                 if let (Ok(size), Ok(sf)) = (w.inner_size(), w.scale_factor()) {
                     let mini = (size.width as f64 / sf) < 450.0;
-                    // pop-up mode: show during calls, fade out afterwards
+                    let pct = MINI_OPACITY.load(Ordering::SeqCst).clamp(30, 100) as f32;
+                    let base = if mini { pct * 255.0 / 100.0 } else { 255.0 };
+                    let hwnd = w.hwnd().ok().map(|h| h.0 as isize);
+                    let mut target: f32 = 1.0;
                     if mini && POPUP.load(Ordering::SeqCst) {
+                        // pop-up mode: fade in for a call, fade out afterwards
                         let held = POPUP_HOLD
                             .lock()
                             .map(|g| g.map(|t| t > Instant::now()).unwrap_or(false))
                             .unwrap_or(false);
                         let visible = w.is_visible().unwrap_or(true);
-                        if active {
-                            fade = 1.0;
-                            if !visible {
+                        if active && !visible {
+                            if !winpower::fullscreen_app_active() {
+                                fade = 0.0;
+                                if let Some(h) = hwnd {
+                                    winpower::set_alpha(h, 0);
+                                    last_alpha = 0;
+                                }
                                 let _ = w.show();
                             }
-                        } else if visible && !held && last_active.elapsed() > std::time::Duration::from_secs(4) {
-                            fade -= 0.25;
-                            if fade <= 0.0 {
-                                let _ = w.hide();
-                                fade = 1.0;
-                            }
-                        } else {
-                            fade = 1.0;
+                        } else if visible && !active && !held && last_active.elapsed() > std::time::Duration::from_secs(4) {
+                            target = 0.0;
                         }
-                    } else {
-                        fade = 1.0;
                     }
-                    let pct = MINI_OPACITY.load(Ordering::SeqCst).clamp(30, 100) as f32;
-                    let base = if mini { pct * 255.0 / 100.0 } else { 255.0 };
+                    if target > fade {
+                        fade = (fade + 0.1).min(1.0);
+                    } else if target < fade {
+                        fade = (fade - 0.05).max(0.0);
+                        if fade <= 0.0 {
+                            let _ = w.hide();
+                        }
+                    }
                     let alpha = (base * fade).round().clamp(0.0, 255.0) as i32;
                     if alpha != last_alpha {
-                        if let Ok(h) = w.hwnd() {
-                            winpower::set_alpha(h.0 as isize, alpha as u8);
+                        if let Some(h) = hwnd {
+                            winpower::set_alpha(h, alpha as u8);
                             last_alpha = alpha;
                         }
                     }
                 }
             }
-            std::thread::sleep(std::time::Duration::from_millis(250));
+            std::thread::sleep(std::time::Duration::from_millis(50));
         }
     });
 }
@@ -449,6 +460,23 @@ mod winpower {
         unsafe {
             let color: u32 = 0x0032_241E; // COLORREF 0x00BBGGRR
             DwmSetWindowAttribute(hwnd, 34, &color as *const u32 as *const core::ffi::c_void, 4);
+        }
+    }
+
+    #[link(name = "shell32")]
+    extern "system" {
+        fn SHQueryUserNotificationState(state: *mut i32) -> i32;
+    }
+
+    /// True while a fullscreen app (game, video, presentation) has the screen.
+    pub fn fullscreen_app_active() -> bool {
+        unsafe {
+            let mut st: i32 = 0;
+            if SHQueryUserNotificationState(&mut st) != 0 {
+                return false;
+            }
+            // 2 = busy (fullscreen), 3 = Direct3D fullscreen, 4 = presentation mode
+            st == 2 || st == 3 || st == 4
         }
     }
 
