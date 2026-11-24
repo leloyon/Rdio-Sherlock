@@ -823,20 +823,42 @@ const MINI_SCRIPT: &str = r##"(function () {
     emitHold(on);
     setTimeout(toCorner, 200);
   };
+  // Where the mini card goes for the chosen corner (null = leave in place).
+  function cornerXY(h) {
+    var corner = (window.__rdioPrefs && window.__rdioPrefs.miniCorner) || 0;
+    if (!corner) return null;
+    var sx = window.screen.availLeft || 0, sy = window.screen.availTop || 0;
+    var sw = window.screen.availWidth, sh = window.screen.availHeight, m = 12;
+    return {
+      x: (corner === 5 || corner === 6) ? sx + Math.round((sw - W) / 2)
+        : (corner === 2 || corner === 4) ? sx + sw - W - m : sx + m,
+      y: (corner === 3 || corner === 4 || corner === 6) ? sy + sh - h - m : sy + m
+    };
+  }
   function toCorner() {
     var t = api();
-    var corner = (window.__rdioPrefs && window.__rdioPrefs.miniCorner) || 0;
-    if (!t || !corner) return;
+    var xy = cornerXY(curH);
+    if (!t || !xy) return;
     try {
       var C = (t.dpi && t.dpi.LogicalPosition) || t.window.LogicalPosition;
-      var sx = window.screen.availLeft || 0, sy = window.screen.availTop || 0;
-      var sw = window.screen.availWidth, sh = window.screen.availHeight, m = 12;
-      var x = (corner === 5 || corner === 6) ? sx + Math.round((sw - W) / 2)
-        : (corner === 2 || corner === 4) ? sx + sw - W - m : sx + m;
-      var y = (corner === 3 || corner === 4 || corner === 6) ? sy + sh - curH - m : sy + m;
-      var p = t.window.getCurrentWindow().setPosition(new C(x, y));
+      var p = t.window.getCurrentWindow().setPosition(new C(xy.x, xy.y));
       if (p && p.catch) p.catch(function () {});
     } catch (e) {}
+  }
+  // Size and position are changed together, so the window lands in its
+  // corner at once instead of shrinking first and moving afterwards.
+  function placeMini() {
+    var t = api();
+    if (!t) return Promise.resolve();
+    try {
+      var win = t.window.getCurrentWindow();
+      var C = (t.dpi && t.dpi.LogicalPosition) || t.window.LogicalPosition;
+      var xy = cornerXY(H);
+      var ps = [];
+      if (xy) ps.push(win.setPosition(new C(xy.x, xy.y)));
+      ps.push(win.setSize(Logical(W, H)));
+      return Promise.all(ps.map(function (p) { return (p && p.catch) ? p.catch(function () {}) : p; }));
+    } catch (e) { return Promise.resolve(); }
   }
   state.enter = function () {
     if (state.on) return;
@@ -844,12 +866,22 @@ const MINI_SCRIPT: &str = r##"(function () {
     var go = function () {
       state.on = true;
       emitMini(true);
+      // hide the page while the window changes size, then show the card
+      // once it is in place, so nothing is seen shrinking
+      var root = document.documentElement;
+      root.style.visibility = 'hidden';
+      var shown = false;
+      var reveal = function () {
+        if (shown) return;
+        shown = true;
+        root.style.visibility = '';
+      };
       if (!overlay) build();
       setMiniStyle(true);
-      resizeTo(W, H);
       onTop(true);
       skipTaskbar(true);
-      setTimeout(toCorner, 150);
+      placeMini().then(reveal, reveal);
+      setTimeout(reveal, 600);
     };
     if (!t) { go(); return; }
     // remember the normal size so leaving mini mode can restore it
@@ -1135,11 +1167,13 @@ const INIT_SCRIPT: &str = r##"(function () {
           '.rdio-sb-min:hover svg{transform:translateY(3px);}' +
           '.rdio-sb-close:hover{background:#e5484d;color:#fff;}' +
           '.rdio-sb-close:hover svg{transform:rotate(90deg) scale(1.1);}' +
-          '.rdio-sb-mini:hover{background:rgba(70,150,255,.9);color:#fff;}' +
+          '.rdio-sb-mini{width:50px;height:34px;border-radius:13px;background:rgba(58,128,236,.62);}' +
+          '.rdio-sb-mini svg{width:20px;height:20px;}' +
+          '.rdio-sb-mini:hover{background:rgba(80,150,255,.95);color:#fff;}' +
           '.rdio-sb-mini .inner{fill:currentColor;stroke:none;transform-box:fill-box;transform-origin:100% 100%;transition:transform .25s cubic-bezier(.2,.8,.2,1);}' +
           '.rdio-sb-mini:hover .inner{transform:scale(.6) translate(-2px,-2px);}' +
           '.rdio-sb-mini:hover svg{transform:scale(1.12);}' +
-          '@media (max-width:1380px){html:not(.rdio-fs) .panel .mat-toolbar{height:100px!important;padding-top:32px!important;box-sizing:border-box!important;}}' +
+          '@media (max-width:1380px){html:not(.rdio-fs) .panel .mat-toolbar{height:104px!important;padding-top:36px!important;box-sizing:border-box!important;}}' +
           '@media (prefers-reduced-motion:reduce){.rdio-sb,.rdio-sb svg,.rdio-sb .inner{transition:none!important}#rdio-strip-btns,#rdio-mini-btn,.rdio-sb.pop{animation:none!important}}';
         (document.head || root).appendChild(css);
       }
@@ -1248,13 +1282,15 @@ const INIT_SCRIPT: &str = r##"(function () {
   }, true);
   document.addEventListener('mouseup', function () { dragPending = null; }, true);
   // Fullscreen zoom: like browser zoom, but only while the scanner is
-  // fullscreen. It opens at a size chosen to fill the screen, can be changed
-  // with the on-screen +/- control, Ctrl + / Ctrl - / Ctrl 0 or Ctrl + mouse
-  // wheel, remembers the last size you picked, and resets on leaving
-  // fullscreen.
+  // fullscreen. It is applied the moment fullscreen starts, at a size that
+  // fills the screen, and can be changed with a slider (opened from the
+  // magnifier button), Ctrl + / Ctrl - / Ctrl 0 or Ctrl + mouse wheel. The
+  // last size you pick is remembered, and it resets on leaving fullscreen.
   var ZKEY = 'rdio-sherlock-fs-zoom';
   var fsZoom = 1;
-  var zPill = null, zLabel = null, zTimer = null;
+  var baseW = 1920, baseH = 1080;   // unzoomed screen size, read on entering
+  var zPill = null, zLabel = null, zSlider = null, zBtn = null;
+  var zTimer = null, zRaf = 0, zPending = 1;
   function webviewObj() {
     try {
       var t = window.__TAURI__;
@@ -1262,13 +1298,18 @@ const INIT_SCRIPT: &str = r##"(function () {
     } catch (e) { return null; }
   }
   function pushZoom(z) {
-    var wv = webviewObj();
-    if (!wv) return;
-    try { var p = wv.setZoom(z); if (p && p.catch) p.catch(function () {}); } catch (e) {}
+    zPending = z;
+    if (zRaf) return;
+    zRaf = requestAnimationFrame(function () {
+      zRaf = 0;
+      var wv = webviewObj();
+      if (!wv) return;
+      try { var p = wv.setZoom(zPending); if (p && p.catch) p.catch(function () {}); } catch (e) {}
+    });
   }
-  function autoZoom() {
-    var w = window.innerWidth * fsZoom, h = window.innerHeight * fsZoom;
-    var z = Math.min(w / 1000, h / 700);
+  // 100% = 1.00; about 145% on a 1920x1080 screen, larger on bigger screens
+  function fitZoom() {
+    var z = Math.min(baseW / 1324, baseH / 745);
     return Math.max(1, Math.min(2.5, Math.round(z * 20) / 20));
   }
   function savedZoom() {
@@ -1287,44 +1328,51 @@ const INIT_SCRIPT: &str = r##"(function () {
         else localStorage.removeItem(ZKEY);
       } catch (e) {}
     }
-    updatePill();
     showPill();
   }
   function buildPill() {
     if (zPill) return;
     var st = document.createElement('style');
     st.textContent =
-      '#rdio-zoom-pill{position:fixed;right:18px;bottom:18px;z-index:2147483647;display:flex;align-items:center;gap:2px;padding:4px;border-radius:14px;background:rgba(28,33,44,.62);-webkit-backdrop-filter:blur(10px) saturate(140%);backdrop-filter:blur(10px) saturate(140%);color:#eef2f8;font:600 13px -apple-system,"Segoe UI",Roboto,sans-serif;opacity:0;transform:translateY(8px);pointer-events:none;transition:opacity .25s ease,transform .25s cubic-bezier(.2,.8,.2,1);user-select:none;-webkit-user-select:none;}' +
+      '#rdio-zoom-pill{position:fixed;right:18px;bottom:18px;z-index:2147483647;display:flex;align-items:center;border-radius:14px;background:rgba(28,33,44,.62);-webkit-backdrop-filter:blur(10px) saturate(140%);backdrop-filter:blur(10px) saturate(140%);color:#eef2f8;font:600 13px -apple-system,"Segoe UI",Roboto,sans-serif;opacity:0;transform:translateY(8px);pointer-events:none;transition:opacity .25s ease,transform .25s cubic-bezier(.2,.8,.2,1);user-select:none;-webkit-user-select:none;}' +
       '#rdio-zoom-pill.show{opacity:1;transform:none;pointer-events:auto;}' +
-      '#rdio-zoom-pill button{width:34px;height:30px;border:none;border-radius:10px;background:transparent;color:inherit;font:inherit;font-size:18px;line-height:1;cursor:pointer;transition:background .15s ease,transform .1s ease;}' +
-      '#rdio-zoom-pill button:hover{background:rgba(255,255,255,.2);}' +
-      '#rdio-zoom-pill button:active{transform:scale(.88);}' +
-      '#rdio-zoom-pill button.lbl{width:auto;min-width:56px;padding:0 6px;font-size:13px;}';
+      '#rdio-zoom-pill .zbtn{width:40px;height:36px;border:none;border-radius:14px;background:transparent;color:inherit;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:background .15s ease,transform .1s ease;}' +
+      '#rdio-zoom-pill .zbtn:hover{background:rgba(255,255,255,.2);}' +
+      '#rdio-zoom-pill .zbtn:active{transform:scale(.9);}' +
+      '#rdio-zoom-pill .zbtn svg{width:19px;height:19px;fill:none;stroke:currentColor;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round;}' +
+      '#rdio-zoom-pill .zpanel{display:flex;align-items:center;gap:10px;max-width:0;opacity:0;overflow:hidden;padding:0;white-space:nowrap;transition:max-width .28s cubic-bezier(.2,.8,.2,1),opacity .2s ease,padding .28s ease;}' +
+      '#rdio-zoom-pill.open .zpanel{max-width:260px;opacity:1;padding:0 4px 0 14px;}' +
+      '#rdio-zoom-pill .zlbl{min-width:44px;text-align:right;cursor:pointer;}' +
+      '#rdio-zoom-pill input[type=range]{-webkit-appearance:none;appearance:none;width:150px;height:4px;border-radius:2px;background:rgba(255,255,255,.3);outline:none;margin:0;cursor:pointer;}' +
+      '#rdio-zoom-pill input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:16px;height:16px;border-radius:50%;background:#fff;box-shadow:0 1px 4px rgba(0,0,0,.4);transition:transform .12s ease;}' +
+      '#rdio-zoom-pill input[type=range]::-webkit-slider-thumb:hover{transform:scale(1.2);}';
     zPill = document.createElement('div');
     zPill.id = 'rdio-zoom-pill';
     zPill.appendChild(st);
-    var minus = document.createElement('button');
-    minus.type = 'button'; minus.textContent = '−'; minus.title = 'Zoom out (Ctrl -)';
-    zLabel = document.createElement('button');
-    zLabel.type = 'button'; zLabel.className = 'lbl'; zLabel.title = 'Fit to screen (Ctrl 0)';
-    var plus = document.createElement('button');
-    plus.type = 'button'; plus.textContent = '+'; plus.title = 'Zoom in (Ctrl +)';
-    minus.addEventListener('click', function (e) { e.stopPropagation(); setZoom(fsZoom - 0.1, true); });
-    plus.addEventListener('click', function (e) { e.stopPropagation(); setZoom(fsZoom + 0.1, true); });
-    zLabel.addEventListener('click', function (e) { e.stopPropagation(); setZoom(autoZoomBase(), false); });
-    // clicks on the control must not reach the scanner (double-click leaves fullscreen)
+    var panel = document.createElement('div');
+    panel.className = 'zpanel';
+    zSlider = document.createElement('input');
+    zSlider.type = 'range'; zSlider.min = '50'; zSlider.max = '300'; zSlider.step = '5';
+    zSlider.addEventListener('input', function () { setZoom(parseInt(zSlider.value, 10) / 100, true); });
+    zLabel = document.createElement('span');
+    zLabel.className = 'zlbl'; zLabel.title = 'Click to fit the screen (Ctrl 0)';
+    zLabel.addEventListener('click', function (e) { e.stopPropagation(); setZoom(fitZoom(), false); });
+    panel.appendChild(zSlider); panel.appendChild(zLabel);
+    zBtn = document.createElement('button');
+    zBtn.type = 'button'; zBtn.className = 'zbtn'; zBtn.title = 'Zoom';
+    zBtn.innerHTML = '<svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5L21 21M10.5 8v5M8 10.5h5"/></svg>';
+    zBtn.addEventListener('click', function (e) {
+      e.stopPropagation();
+      zPill.classList.toggle('open');
+      showPill();
+    });
+    // clicks on the control must not reach the scanner (a double-click there leaves fullscreen)
     ['dblclick', 'mousedown'].forEach(function (n) {
       zPill.addEventListener(n, function (e) { e.stopPropagation(); }, true);
     });
     zPill.addEventListener('mouseenter', function () { if (zTimer) clearTimeout(zTimer); });
     zPill.addEventListener('mouseleave', showPill);
-    zPill.appendChild(minus); zPill.appendChild(zLabel); zPill.appendChild(plus);
-  }
-  // "Fit" always computes from the true (unzoomed) screen size
-  function autoZoomBase() { return autoZoom(); }
-  function updatePill() {
-    if (zLabel) zLabel.textContent = Math.round(fsZoom * 100) + '%';
-    if (zPill) zPill.style.transformOrigin = 'bottom right';
+    zPill.appendChild(panel); zPill.appendChild(zBtn);
   }
   function showPill() {
     var host = document.fullscreenElement;
@@ -1333,24 +1381,29 @@ const INIT_SCRIPT: &str = r##"(function () {
     if (zPill.parentNode !== host) host.appendChild(zPill);
     // keep the control a constant on-screen size whatever the zoom is
     zPill.style.zoom = String(1 / fsZoom);
-    updatePill();
+    zLabel.textContent = Math.round(fsZoom * 100) + '%';
+    if (document.activeElement !== zSlider) zSlider.value = String(Math.round(fsZoom * 100));
     zPill.classList.add('show');
     if (zTimer) clearTimeout(zTimer);
-    zTimer = setTimeout(function () { if (zPill) zPill.classList.remove('show'); }, 2500);
+    zTimer = setTimeout(function () {
+      if (!zPill) return;
+      zPill.classList.remove('show');
+      zPill.classList.remove('open');
+    }, zPill.classList.contains('open') ? 5000 : 2500);
   }
   document.addEventListener('fullscreenchange', function () {
     document.documentElement.classList.toggle('rdio-fs', !!document.fullscreenElement);
     if (document.fullscreenElement) {
-      setTimeout(function () {
-        if (!document.fullscreenElement) return;
-        var s0 = savedZoom();
-        setZoom(s0 !== null ? s0 : autoZoom());
-      }, 300);
+      // zoom is still 1 here, so the screen size is the true unzoomed size
+      baseW = window.screen.width || baseW;
+      baseH = window.screen.height || baseH;
+      var s0 = savedZoom();
+      setZoom(s0 !== null ? s0 : fitZoom());
     } else {
       fsZoom = 1;
       pushZoom(1);
       if (zTimer) clearTimeout(zTimer);
-      if (zPill) { zPill.classList.remove('show'); if (zPill.parentNode) zPill.parentNode.removeChild(zPill); }
+      if (zPill) { zPill.classList.remove('show'); zPill.classList.remove('open'); if (zPill.parentNode) zPill.parentNode.removeChild(zPill); }
     }
   });
   document.addEventListener('mousemove', function () { if (isFull()) showPill(); }, true);
@@ -1359,7 +1412,7 @@ const INIT_SCRIPT: &str = r##"(function () {
     var k = e.key;
     if (k === '+' || k === '=') { setZoom(fsZoom + 0.1, true); }
     else if (k === '-' || k === '_') { setZoom(fsZoom - 0.1, true); }
-    else if (k === '0') { setZoom(autoZoomBase(), false); }
+    else if (k === '0') { setZoom(fitZoom(), false); }
     else return;
     e.preventDefault(); e.stopPropagation();
   }, true);
@@ -1613,7 +1666,7 @@ fn refresh_tray_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         let latest = UPDATE_LATEST.lock().ok().and_then(|g| g.clone()).unwrap_or_default();
         let (label, enabled) = match st {
             1 => ("Checking…".to_string(), false),
-            2 => ("You're on the current build — check again".to_string(), true),
+            2 => ("You're on the current build".to_string(), true),
             3 => (format!("Install v{} now", latest.trim_start_matches('v')), true),
             4 => ("Installing…".to_string(), false),
             5 => ("Couldn't reach GitHub — check again".to_string(), true),
