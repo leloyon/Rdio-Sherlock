@@ -269,7 +269,10 @@ fn status_icon<R: Runtime>(app: &AppHandle<R>, state: u32) -> Option<tauri::imag
 /// and the mini-player opacity up to date.
 fn start_tick_thread<R: Runtime>(app: AppHandle<R>) {
     std::thread::spawn(move || {
-        let mut n: u64 = 0;
+        let mut last_slow: Option<Instant> = None;
+        let mut last_quiet: Option<Instant> = None;
+        let mut last_loop = Instant::now();
+        let mut stage: u32 = 0;
         let mut last_icon: u32 = 99;
         let mut last_sig: (bool, bool, bool) = (false, false, false);
         let mut last_alpha: i32 = -1;
@@ -277,18 +280,55 @@ fn start_tick_thread<R: Runtime>(app: AppHandle<R>) {
         let mut fade: f32 = 1.0;
         let mut nolink = false;
         let mut active = false;
-        // The loop runs every 50 ms so window fades are smooth; the slower
-        // jobs (title, mute, tray icon) run every 250 ms.
+        // The loop runs every 50 ms only while a window fade is in progress
+        // (so fades are smooth) and otherwise every 250 ms, which keeps the
+        // app near zero CPU when idle. The slower jobs (title, mute, tray
+        // icon) run every 250 ms.
         loop {
             let win = app.get_webview_window("main");
+            let mut fast = false;
 
-            if n % 5 == 0 {
+            // after the PC slept the loop gap is large: restart the
+            // heartbeat clock so sleeping is not mistaken for a crash
+            if last_loop.elapsed() > std::time::Duration::from_secs(20) {
+                if let Ok(mut g) = LAST_BEAT.lock() {
+                    if g.is_some() {
+                        *g = Some(Instant::now());
+                    }
+                }
+                stage = 0;
+            }
+            last_loop = Instant::now();
+
+            let slow = last_slow.map(|t| t.elapsed() >= std::time::Duration::from_millis(240)).unwrap_or(true);
+            if slow {
+                last_slow = Some(Instant::now());
                 let title = win.as_ref().and_then(|w| w.title().ok()).unwrap_or_default();
                 nolink = title.ends_with("(no link)");
                 active = !nolink && title != "Rdio Sherlock" && !title.is_empty();
 
-                if n % 100 == 0 {
+                ACTIVE.store(active, Ordering::SeqCst);
+                if last_quiet.map(|t| t.elapsed() >= std::time::Duration::from_secs(5)).unwrap_or(true) {
+                    last_quiet = Some(Instant::now());
                     reload_quiet(&app);
+                }
+
+                // crash watchdog (only once the pages have sent a heartbeat)
+                let age = LAST_BEAT.lock().ok().and_then(|g| g.map(|t| t.elapsed().as_secs()));
+                if let Some(age) = age {
+                    if age < 40 {
+                        stage = 0;
+                    } else if age > 150 && stage == 0 {
+                        stage = 1;
+                        if let Some(w) = win.as_ref() {
+                            let _ = w.eval("location.reload()");
+                        }
+                    } else if age > 240 && stage == 1 {
+                        stage = 2;
+                        if recovery_restart_allowed(&app) {
+                            relaunch_soon(&app);
+                        }
+                    }
                 }
                 let changed = sync_mute(&app);
                 let sn = snoozed();
@@ -308,8 +348,6 @@ fn start_tick_thread<R: Runtime>(app: AppHandle<R>) {
                     }
                 }
             }
-            n += 1;
-
             if active {
                 last_active = Instant::now();
             }
@@ -350,10 +388,11 @@ fn start_tick_thread<R: Runtime>(app: AppHandle<R>) {
                             let _ = w.hide();
                         }
                     }
+                    fast = fade > 0.0 && fade < 1.0;
                     let alpha = (base * fade).round().clamp(0.0, 255.0) as i32;
                     // Re-apply regularly as well as on change: hiding and
                     // showing the window (pop-up mode) can reset its opacity.
-                    if alpha != last_alpha || n % 5 == 0 || (mini && POPUP.load(Ordering::SeqCst)) {
+                    if alpha != last_alpha || slow || (mini && POPUP.load(Ordering::SeqCst)) {
                         if let Some(h) = hwnd {
                             winpower::set_alpha(h, alpha as u8);
                             last_alpha = alpha;
@@ -361,7 +400,7 @@ fn start_tick_thread<R: Runtime>(app: AppHandle<R>) {
                     }
                 }
             }
-            std::thread::sleep(std::time::Duration::from_millis(50));
+            std::thread::sleep(std::time::Duration::from_millis(if fast { 50 } else { 250 }));
         }
     });
 }
@@ -1036,6 +1075,12 @@ const AUDIO_SCRIPT: &str = r##"(function () {
 const INIT_SCRIPT: &str = r##"(function () {
   if (window.__rdioStrip) return;
   window.__rdioStrip = true;
+  // Heartbeat for the app's crash watchdog.
+  (function beat() {
+    var ok = false;
+    try { window.__TAURI__.event.emit('rdio-heartbeat', '1'); ok = true; } catch (e) {}
+    setTimeout(beat, ok ? 10000 : 1000);
+  })();
   var apiTries = 0;
   function api() {
     try {
@@ -1419,32 +1464,246 @@ fn refresh_tray_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         &[&autostart as &dyn IsMenuItem<R>, &start_hidden, &auto_live, &keep_awake],
     )?;
 
-    let server = MenuItem::with_id(app, "server", "Change server…", true, None::<&str>)?;
+    let server = MenuItem::with_id(app, "server", "Servers…", true, None::<&str>)?;
+
+    // Updates (Windows self-update)
+    #[cfg(windows)]
+    let updates_menu = {
+        let st = UPDATE_STATE.load(Ordering::SeqCst);
+        let latest = UPDATE_LATEST.lock().ok().and_then(|g| g.clone()).unwrap_or_default();
+        let (label, enabled) = match st {
+            1 => ("Checking…".to_string(), false),
+            2 => ("Up to date — check again".to_string(), true),
+            3 => (format!("Install v{} now", latest.trim_start_matches('v')), true),
+            4 => ("Installing…".to_string(), false),
+            5 => ("Couldn't check or install — try again".to_string(), true),
+            _ => ("Check for updates".to_string(), true),
+        };
+        let ver = MenuItem::with_id(app, "update_ver", format!("Version {}", env!("CARGO_PKG_VERSION")), false, None::<&str>)?;
+        let act = MenuItem::with_id(app, "update_action", label, enabled, None::<&str>)?;
+        let auto = CheckMenuItem::with_id(app, "auto_update", "Install updates automatically", true, AUTO_UPDATE.load(Ordering::SeqCst), None::<&str>)?;
+        Submenu::with_items(
+            app,
+            if st == 3 { "Updates (new version!)" } else { "Updates" },
+            true,
+            &[&ver as &dyn IsMenuItem<R>, &act, &auto],
+        )?
+    };
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     let s1 = sep(app)?;
     let s2 = sep(app)?;
     let s3 = sep(app)?;
 
-    let menu = Menu::with_items(
-        app,
-        &[
-            &mute as &dyn IsMenuItem<R>,
-            &snooze_menu,
-            &quiet_menu,
-            &s1,
-            &mini_menu,
-            &audio,
-            &s2,
-            &startup_menu,
-            &server,
-            &s3,
-            &quit,
-        ],
-    )?;
+    let mut items: Vec<&dyn IsMenuItem<R>> = vec![
+        &mute, &snooze_menu, &quiet_menu, &s1, &mini_menu, &audio, &s2, &startup_menu,
+    ];
+    #[cfg(windows)]
+    items.push(&updates_menu);
+    items.push(&server);
+    items.push(&s3);
+    items.push(&quit);
+    let menu = Menu::with_items(app, &items)?;
     if let Some(tray) = app.tray_by_id("tray") {
         let _ = tray.set_menu(Some(menu));
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Self-update (Windows): checks the GitHub releases for a newer version,
+// downloads the new exe, verifies its SHA-256 against the checksum file
+// published with the release, swaps it in (a running exe can be renamed but
+// not overwritten) and relaunches.
+// ---------------------------------------------------------------------------
+const RELEASE_REPO: &str = "leloyon/Rdio-Sherlock";
+/// 0 unknown, 1 checking, 2 up to date, 3 update available, 4 installing, 5 error
+static UPDATE_STATE: AtomicU32 = AtomicU32::new(0);
+static UPDATE_LATEST: Mutex<Option<String>> = Mutex::new(None);
+static AUTO_UPDATE: AtomicBool = AtomicBool::new(false);
+/// True while a call is playing (set by the tick thread).
+static ACTIVE: AtomicBool = AtomicBool::new(false);
+
+fn parse_ver(s: &str) -> Vec<u32> {
+    s.trim().trim_start_matches('v').split('.').map(|p| p.parse().unwrap_or(0)).collect()
+}
+
+fn is_newer(candidate: &str, current: &str) -> bool {
+    let mut a = parse_ver(candidate);
+    let mut b = parse_ver(current);
+    while a.len() < b.len() { a.push(0); }
+    while b.len() < a.len() { b.push(0); }
+    a > b
+}
+
+fn valid_tag(t: &str) -> bool {
+    let n = t.trim_start_matches('v');
+    !n.is_empty() && n.len() <= 20 && n.chars().all(|c| c.is_ascii_digit() || c == '.')
+}
+
+#[cfg(windows)]
+fn run_ps(script: &str, envs: &[(&str, &str)]) -> Option<String> {
+    use std::os::windows::process::CommandExt;
+    let mut c = Command::new("powershell");
+    c.args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script])
+        .creation_flags(0x0800_0000);
+    for (k, v) in envs {
+        c.env(k, v);
+    }
+    let out = c.output().ok()?;
+    Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+#[cfg(windows)]
+fn fetch_latest_tag() -> Option<String> {
+    let script = format!(
+        "$ProgressPreference='SilentlyContinue';[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12;try{{$r=Invoke-RestMethod -Uri 'https://api.github.com/repos/{}/releases/latest' -Headers @{{'User-Agent'='RdioSherlock'}};Write-Output $r.tag_name}}catch{{Write-Output 'ERR'}}",
+        RELEASE_REPO
+    );
+    let out = run_ps(&script, &[])?;
+    let line = out.lines().last()?.trim().to_string();
+    if valid_tag(&line) { Some(line) } else { None }
+}
+
+#[cfg(not(windows))]
+fn fetch_latest_tag() -> Option<String> {
+    None
+}
+
+fn check_for_updates<R: Runtime>(app: &AppHandle<R>) {
+    UPDATE_STATE.store(1, Ordering::SeqCst);
+    let _ = refresh_tray_menu(app);
+    match fetch_latest_tag() {
+        Some(tag) => {
+            if is_newer(&tag, env!("CARGO_PKG_VERSION")) {
+                if let Ok(mut g) = UPDATE_LATEST.lock() {
+                    *g = Some(tag);
+                }
+                UPDATE_STATE.store(3, Ordering::SeqCst);
+            } else {
+                if let Ok(mut g) = UPDATE_LATEST.lock() {
+                    *g = None;
+                }
+                UPDATE_STATE.store(2, Ordering::SeqCst);
+            }
+        }
+        None => UPDATE_STATE.store(5, Ordering::SeqCst),
+    }
+    let _ = refresh_tray_menu(app);
+}
+
+const UPDATE_NOTICE_JS: &str = r##"(function(){try{if(document.getElementById('rdio-update-notice'))return;var d=document.createElement('div');d.id='rdio-update-notice';d.style.cssText='position:fixed;inset:0;z-index:2147483647;display:flex;align-items:center;justify-content:center;background:rgba(10,12,18,0.88);font-family:-apple-system,"Segoe UI",Roboto,sans-serif;';var b=document.createElement('div');b.style.cssText='max-width:380px;padding:22px 26px;border-radius:12px;background:#1e1e24;border:1px solid rgba(255,255,255,0.16);color:#f2f2f2;text-align:center;line-height:1.45;';var h=document.createElement('div');h.textContent='Updating Rdio Sherlock';h.style.cssText='font-size:17px;font-weight:600;margin-bottom:8px;';var t=document.createElement('div');t.textContent='Downloading and checking the new version. The app will restart by itself in a moment.';t.style.cssText='font-size:13px;color:#c8c8d0;';b.appendChild(h);b.appendChild(t);d.appendChild(b);(document.body||document.documentElement).appendChild(d);}catch(e){}})();"##;
+const UPDATE_NOTICE_OFF_JS: &str = r##"(function(){try{var d=document.getElementById('rdio-update-notice');if(d)d.remove();}catch(e){}})();"##;
+
+#[cfg(windows)]
+const DOWNLOAD_PS: &str = "$ProgressPreference='SilentlyContinue';[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12;try{$w=New-Object Net.WebClient;$w.Headers.Add('User-Agent','RdioSherlock');$w.DownloadFile($env:RS_URL,$env:RS_OUT);$want=($w.DownloadString($env:RS_SHA_URL).Trim().Split()[0]).ToLower();$got=(Get-FileHash -Algorithm SHA256 -Path $env:RS_OUT).Hash.ToLower();if($got -ne $want){Remove-Item $env:RS_OUT -Force;Write-Output 'FAIL:hash'}else{Write-Output 'OK'}}catch{Write-Output ('FAIL:'+$_.Exception.Message)}";
+
+fn install_update<R: Runtime>(app: &AppHandle<R>) {
+    let tag = match UPDATE_LATEST.lock().ok().and_then(|g| g.clone()) {
+        Some(t) if valid_tag(&t) => t,
+        _ => return,
+    };
+    if UPDATE_STATE.load(Ordering::SeqCst) == 4 {
+        return;
+    }
+    UPDATE_STATE.store(4, Ordering::SeqCst);
+    let _ = refresh_tray_menu(app);
+    #[cfg(windows)]
+    {
+        let fail = |app: &AppHandle<R>| {
+            UPDATE_STATE.store(5, Ordering::SeqCst);
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.eval(UPDATE_NOTICE_OFF_JS);
+            }
+            let _ = refresh_tray_menu(app);
+        };
+        let exe = match std::env::current_exe() {
+            Ok(e) => e,
+            Err(_) => return fail(app),
+        };
+        let new = exe.with_extension("exe.new");
+        let old = exe.with_extension("exe.old");
+        if let Some(w) = app.get_webview_window("main") {
+            let _ = w.show();
+            let _ = w.eval(UPDATE_NOTICE_JS);
+        }
+        let base = format!("https://github.com/{}/releases/download/{}/", RELEASE_REPO, tag);
+        let url = format!("{}Rdio-Sherlock.exe", base);
+        let sha = format!("{}Rdio-Sherlock.exe.sha256", base);
+        let out_path = new.to_string_lossy().to_string();
+        let res = run_ps(DOWNLOAD_PS, &[("RS_URL", url.as_str()), ("RS_SHA_URL", sha.as_str()), ("RS_OUT", out_path.as_str())]);
+        let ok = res.as_deref().map(|r| r.lines().last().unwrap_or("") == "OK").unwrap_or(false);
+        if !ok {
+            let _ = std::fs::remove_file(&new);
+            return fail(app);
+        }
+        let _ = std::fs::remove_file(&old);
+        if std::fs::rename(&exe, &old).is_err() {
+            let _ = std::fs::remove_file(&new);
+            return fail(app);
+        }
+        if std::fs::rename(&new, &exe).is_err() {
+            let _ = std::fs::rename(&old, &exe);
+            return fail(app);
+        }
+        relaunch_path(app, &exe);
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = tag;
+        UPDATE_STATE.store(5, Ordering::SeqCst);
+        let _ = refresh_tray_menu(app);
+    }
+}
+
+/// Background checker: first check shortly after start, then every 6 hours.
+/// With "install automatically" on, an available update is installed once no
+/// call has been playing for a short while.
+fn start_update_thread<R: Runtime>(app: AppHandle<R>) {
+    #[cfg(windows)]
+    std::thread::spawn(move || {
+        // clean up leftovers from a previous update
+        if let Ok(exe) = std::env::current_exe() {
+            std::thread::sleep(std::time::Duration::from_secs(10));
+            let _ = std::fs::remove_file(exe.with_extension("exe.old"));
+            let _ = std::fs::remove_file(exe.with_extension("exe.new"));
+        }
+        std::thread::sleep(std::time::Duration::from_secs(20));
+        loop {
+            check_for_updates(&app);
+            if AUTO_UPDATE.load(Ordering::SeqCst) && UPDATE_STATE.load(Ordering::SeqCst) == 3 {
+                let mut quiet_for = 0;
+                while quiet_for < 5 {
+                    std::thread::sleep(std::time::Duration::from_secs(2));
+                    if ACTIVE.load(Ordering::SeqCst) { quiet_for = 0; } else { quiet_for += 1; }
+                }
+                install_update(&app);
+            }
+            std::thread::sleep(std::time::Duration::from_secs(6 * 3600));
+        }
+    });
+    #[cfg(not(windows))]
+    let _ = app;
+}
+
+// ---------------------------------------------------------------------------
+// Crash recovery: every page (setup page and scanner) sends a heartbeat. If
+// they stop (renderer crashed or hung), reload the page, and if that does not
+// bring the heartbeat back, restart the app. A restart is attempted at most
+// once every 30 minutes so a persistent fault cannot cause a restart loop.
+// ---------------------------------------------------------------------------
+static LAST_BEAT: Mutex<Option<Instant>> = Mutex::new(None);
+
+fn recovery_restart_allowed<R: Runtime>(app: &AppHandle<R>) -> bool {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as u32)
+        .unwrap_or(0);
+    let last = load_u32(app, "last_recovery.txt", 0);
+    if now.saturating_sub(last) < 1800 {
+        return false;
+    }
+    save_u32(app, "last_recovery.txt", now);
+    true
 }
 
 /// Start-on-login state: an "Rdio Sherlock" value under the per-user
@@ -1527,25 +1786,31 @@ fn load_secure_origin<R: Runtime>(app: &AppHandle<R>) -> Option<String> {
 }
 
 fn relaunch_soon<R: Runtime>(app: &AppHandle<R>) {
+    if let Ok(exe) = std::env::current_exe() {
+        relaunch_path(app, &exe);
+    }
+}
+
+fn relaunch_path<R: Runtime>(app: &AppHandle<R>, exe: &std::path::Path) {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        if let Ok(exe) = std::env::current_exe() {
-            // Wait a moment so this instance has exited (the app is
-            // single-instance), then start the app again.
-            let line = format!(
-                "/C \"ping -n 3 127.0.0.1 >nul & start \"\" \"{}\"\"",
-                exe.display()
-            );
-            let _ = Command::new("cmd")
-                .raw_arg(line)
-                .creation_flags(0x0800_0000)
-                .spawn();
-            app.exit(0);
-        }
+        // Wait a moment so this instance has exited (the app is
+        // single-instance), then start the app again.
+        let line = format!(
+            "/C \"ping -n 3 127.0.0.1 >nul & start \"\" \"{}\"\"",
+            exe.display()
+        );
+        let _ = Command::new("cmd")
+            .raw_arg(line)
+            .creation_flags(0x0800_0000)
+            .spawn();
+        app.exit(0);
     }
     #[cfg(not(windows))]
-    let _ = app;
+    {
+        let _ = (app, exe);
+    }
 }
 
 /// Shown for a few seconds before the one-time restart so it is clear why the
@@ -1701,6 +1966,7 @@ fn main() {
             START_HIDDEN.store(load_flag(app.handle(), "start_hidden.txt", false), Ordering::SeqCst);
             AUTO_LIVE.store(load_flag(app.handle(), "auto_live.txt", true), Ordering::SeqCst);
             POPUP.store(load_flag(app.handle(), "popup.txt", false), Ordering::SeqCst);
+            AUTO_UPDATE.store(load_flag(app.handle(), "auto_update.txt", false), Ordering::SeqCst);
             START_MINI.store(load_flag(app.handle(), "start_mini.txt", false), Ordering::SeqCst);
             MINI_OPACITY.store(load_u32(app.handle(), "mini_opacity.txt", 100), Ordering::SeqCst);
             MINI_CORNER.store(load_u32(app.handle(), "mini_corner.txt", 0), Ordering::SeqCst);
@@ -1722,7 +1988,7 @@ fn main() {
             .initialization_script(PIN_SEED_SCRIPT);
             #[cfg(windows)]
             {
-                let mut args = String::from("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,CalculateNativeWinOcclusion --disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows --renderer-process-limit=1 --autoplay-policy=no-user-gesture-required");
+                let mut args = String::from("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,CalculateNativeWinOcclusion,IntensiveWakeUpThrottling --disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows --renderer-process-limit=1 --autoplay-policy=no-user-gesture-required");
                 if let Some(origin) = load_secure_origin(app.handle()) {
                     args.push_str(&format!(" --unsafely-treat-insecure-origin-as-secure={}", origin));
                 }
@@ -1881,6 +2147,22 @@ fn main() {
                         set_autostart(!autostart_enabled());
                         let _ = refresh_tray_menu(app);
                     }
+                    "update_action" => {
+                        let h = app.clone();
+                        std::thread::spawn(move || {
+                            if UPDATE_STATE.load(Ordering::SeqCst) == 3 {
+                                install_update(&h);
+                            } else {
+                                check_for_updates(&h);
+                            }
+                        });
+                    }
+                    "auto_update" => {
+                        let on = !AUTO_UPDATE.load(Ordering::SeqCst);
+                        AUTO_UPDATE.store(on, Ordering::SeqCst);
+                        save_flag(app, "auto_update.txt", on);
+                        let _ = refresh_tray_menu(app);
+                    }
                     "quit" => app.exit(0),
                     _ => {}
                 })
@@ -1904,6 +2186,12 @@ fn main() {
             let _tray = builder.build(app)?;
             let _ = refresh_tray_menu(app.handle());
             start_tick_thread(app.handle().clone());
+            start_update_thread(app.handle().clone());
+            app.listen("rdio-heartbeat", move |_ev| {
+                if let Ok(mut g) = LAST_BEAT.lock() {
+                    *g = Some(Instant::now());
+                }
+            });
             // The mini player's own right-click menu changes its opacity by
             // emitting this (only) event.
             {

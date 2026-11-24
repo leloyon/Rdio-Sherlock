@@ -3,6 +3,11 @@ name: Build Rdio Sherlock
 on:
   workflow_dispatch:
   push:
+    branches: ['**']
+    tags: ['v*']
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -30,6 +35,10 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev
+      - name: Stamp version from tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: sed -i.bak "s/^version = \".*\"/version = \"${GITHUB_REF_NAME#v}\"/" src-tauri/Cargo.toml
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -44,3 +53,26 @@ jobs:
         with:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.out }}
+
+  release:
+    # Runs only for version tags (e.g. v1.1.0): attaches the three builds and
+    # a checksum file for the Windows exe, which the in-app updater verifies.
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist-artifacts
+      - name: Collect files
+        run: |
+          mkdir out
+          cp dist-artifacts/Rdio-Sherlock/Rdio-Sherlock.exe out/
+          cp dist-artifacts/Rdio-Sherlock-macOS/Rdio-Sherlock-macOS out/
+          cp dist-artifacts/Rdio-Sherlock-Linux/Rdio-Sherlock-Linux out/
+          cd out
+          sha256sum Rdio-Sherlock.exe | cut -d' ' -f1 > Rdio-Sherlock.exe.sha256
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: out/*
+          generate_release_notes: true

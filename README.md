@@ -37,11 +37,14 @@ And yes, before anyone complains - this app was coded primarily by AI, but has b
 ## Features
 
 - **Bring your own server** — a setup screen takes any rdio-scanner server address plus an optional access code, and remembers it per machine
+- **Multiple servers** — keep a list of saved servers, switch between them with one click, and remove the ones you no longer use (tray → Servers…)
+- **Self-updating (Windows)** — checks GitHub releases, downloads the new exe, verifies its SHA-256 checksum, swaps it in and restarts. Install from the tray (Updates) or switch on *Install updates automatically*, which waits until no call is playing
+- **Crash recovery** — if the page stops responding, the app reloads it, and restarts itself if that doesn't help (at most once every 30 minutes)
 - **Lives in the tray** — closing the window tucks the app into the system tray and the audio keeps playing; single-instance, so launching it again just brings the window back
 - **Mini-player** — a compact notification-style box showing the current call. Change the opacity and leave it sit, drag it wherever you want, or enable pop-up mode and it will only appear during active calls.
 - **Last call in the tray tooltip** — hover the tray icon while idle to see the last talkgroup heard and when
 - **Start on login** — an optional tray-menu checkbox registers the app with Windows startup
-- **Tray controls** — Mute, Snooze, Quiet hours, Mini player, Audio output, Startup options, Change server.
+- **Tray controls** — Mute, Snooze, Quiet hours, Mini player, Audio output, Startup options, Updates, Servers.
 
 ## Using it
 
