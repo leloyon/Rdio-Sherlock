@@ -1353,7 +1353,14 @@ const INIT_SCRIPT: &str = r##"(function () {
     panel.className = 'zpanel';
     zSlider = document.createElement('input');
     zSlider.type = 'range'; zSlider.min = '50'; zSlider.max = '300'; zSlider.step = '5';
-    zSlider.addEventListener('input', function () { setZoom(parseInt(zSlider.value, 10) / 100, true); });
+    // Dragging only previews the percentage; the zoom is applied once on
+    // release. Re-zooming the page on every step made the control jump
+    // under the pointer.
+    zSlider.addEventListener('input', function () {
+      zLabel.textContent = zSlider.value + '%';
+      armPill();
+    });
+    zSlider.addEventListener('change', function () { setZoom(parseInt(zSlider.value, 10) / 100, true); });
     zLabel = document.createElement('span');
     zLabel.className = 'zlbl'; zLabel.title = 'Click to fit the screen (Ctrl 0)';
     zLabel.addEventListener('click', function (e) { e.stopPropagation(); setZoom(fitZoom(), false); });
@@ -1374,23 +1381,37 @@ const INIT_SCRIPT: &str = r##"(function () {
     zPill.addEventListener('mouseleave', showPill);
     zPill.appendChild(panel); zPill.appendChild(zBtn);
   }
-  function showPill() {
-    var host = document.fullscreenElement;
-    if (!host) return;
-    buildPill();
-    if (zPill.parentNode !== host) host.appendChild(zPill);
-    // keep the control a constant on-screen size whatever the zoom is
-    zPill.style.zoom = String(1 / fsZoom);
-    zLabel.textContent = Math.round(fsZoom * 100) + '%';
-    if (document.activeElement !== zSlider) zSlider.value = String(Math.round(fsZoom * 100));
-    zPill.classList.add('show');
+  // Keep the control the same on-screen size whatever the zoom is, using
+  // the zoom the page really has (screen width / viewport width) rather than
+  // the one that was requested, so the two can never disagree for a frame.
+  function syncPillScale() {
+    if (!zPill) return;
+    var r = window.innerWidth / baseW;
+    if (!(r > 0.2 && r < 2)) r = 1 / fsZoom;
+    zPill.style.zoom = String(r);
+  }
+  function armPill() {
     if (zTimer) clearTimeout(zTimer);
     zTimer = setTimeout(function () {
       if (!zPill) return;
       zPill.classList.remove('show');
       zPill.classList.remove('open');
-    }, zPill.classList.contains('open') ? 5000 : 2500);
+    }, zPill && zPill.classList.contains('open') ? 5000 : 2500);
   }
+  function showPill() {
+    var host = document.fullscreenElement;
+    if (!host) return;
+    buildPill();
+    if (zPill.parentNode !== host) host.appendChild(zPill);
+    syncPillScale();
+    if (document.activeElement !== zSlider) {
+      zLabel.textContent = Math.round(fsZoom * 100) + '%';
+      zSlider.value = String(Math.round(fsZoom * 100));
+    }
+    zPill.classList.add('show');
+    armPill();
+  }
+  window.addEventListener('resize', function () { if (isFull()) syncPillScale(); });
   document.addEventListener('fullscreenchange', function () {
     document.documentElement.classList.toggle('rdio-fs', !!document.fullscreenElement);
     if (document.fullscreenElement) {
