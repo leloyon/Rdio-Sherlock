@@ -1139,6 +1139,7 @@ const INIT_SCRIPT: &str = r##"(function () {
           '.rdio-sb-mini .inner{fill:currentColor;stroke:none;transform-box:fill-box;transform-origin:100% 100%;transition:transform .25s cubic-bezier(.2,.8,.2,1);}' +
           '.rdio-sb-mini:hover .inner{transform:scale(.6) translate(-2px,-2px);}' +
           '.rdio-sb-mini:hover svg{transform:scale(1.12);}' +
+          '@media (max-width:1380px){html:not(.rdio-fs) .panel .mat-toolbar{height:100px!important;padding-top:32px!important;box-sizing:border-box!important;}}' +
           '@media (prefers-reduced-motion:reduce){.rdio-sb,.rdio-sb svg,.rdio-sb .inner{transition:none!important}#rdio-strip-btns,#rdio-mini-btn,.rdio-sb.pop{animation:none!important}}';
         (document.head || root).appendChild(css);
       }
@@ -1338,6 +1339,7 @@ const INIT_SCRIPT: &str = r##"(function () {
     zTimer = setTimeout(function () { if (zPill) zPill.classList.remove('show'); }, 2500);
   }
   document.addEventListener('fullscreenchange', function () {
+    document.documentElement.classList.toggle('rdio-fs', !!document.fullscreenElement);
     if (document.fullscreenElement) {
       setTimeout(function () {
         if (!document.fullscreenElement) return;
