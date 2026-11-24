@@ -75,6 +75,10 @@ static MINI_STARTED: AtomicBool = AtomicBool::new(false);
 /// Pop-up mode: while the mini player is active, its window only appears
 /// during a call and fades away shortly after.
 static POPUP: AtomicBool = AtomicBool::new(false);
+/// True only while the page's mini player is actually switched on (the page
+/// tells us); pop-up mode and mini opacity apply only then, never to a normal
+/// window that merely happens to be narrow.
+static MINI_ON: AtomicBool = AtomicBool::new(false);
 static POPUP_HOLD: Mutex<Option<Instant>> = Mutex::new(None);
 
 fn hold_popup(secs: u64) {
@@ -355,7 +359,7 @@ fn start_tick_thread<R: Runtime>(app: AppHandle<R>) {
             #[cfg(windows)]
             if let Some(w) = win.as_ref() {
                 if let (Ok(size), Ok(sf)) = (w.inner_size(), w.scale_factor()) {
-                    let mini = (size.width as f64 / sf) < 450.0;
+                    let mini = MINI_ON.load(Ordering::SeqCst) && (size.width as f64 / sf) < 450.0;
                     let pct = MINI_OPACITY.load(Ordering::SeqCst).clamp(30, 100) as f32;
                     let base = if mini { pct * 255.0 / 100.0 } else { 255.0 };
                     let hwnd = w.hwnd().ok().map(|h| h.0 as isize);
@@ -583,6 +587,10 @@ const MINI_SCRIPT: &str = r##"(function () {
   var W = 380, H = 108;
   var state = { on: false };
   window.__rdioMini = state;
+  function emitMini(on) {
+    try { window.__TAURI__.event.emit('rdio-mini-state', on); } catch (e) {}
+  }
+  emitMini(false);
   var overlay = null, mainEl = null, subEl = null, dot = null, timer = null;
   var lastCall = '';
   var recent = [];
@@ -835,6 +843,7 @@ const MINI_SCRIPT: &str = r##"(function () {
     var t = api();
     var go = function () {
       state.on = true;
+      emitMini(true);
       if (!overlay) build();
       setMiniStyle(true);
       resizeTo(W, H);
@@ -857,6 +866,7 @@ const MINI_SCRIPT: &str = r##"(function () {
   };
   state.exit = function () {
     state.on = false;
+    emitMini(false);
     if (timer) { clearInterval(timer); timer = null; }
     if (overlay) { overlay.remove(); overlay = null; }
     closeQuick();
@@ -1217,7 +1227,9 @@ const INIT_SCRIPT: &str = r##"(function () {
   function isFull() { return !!document.fullscreenElement; }
   document.addEventListener('mousedown', function (e) {
     if (e.button !== 0) return;
-    if (isInteractiveTarget(e.target) || (inStrip(e.target) && !isFull())) return;
+    // Fullscreen: the window never moves.
+    if (isFull()) return;
+    if (isInteractiveTarget(e.target) || inStrip(e.target)) return;
     dragPending = { x: e.clientX, y: e.clientY };
   }, true);
   document.addEventListener('mousemove', function (e) {
@@ -1226,11 +1238,6 @@ const INIT_SCRIPT: &str = r##"(function () {
     var dy = e.clientY - dragPending.y;
     if (dx * dx + dy * dy < 16) return;
     dragPending = null;
-    // Fullscreen: dragging leaves fullscreen instead of moving the window.
-    if (isFull()) {
-      try { document.exitFullscreen(); } catch (err) {}
-      return;
-    }
     var a = api();
     if (!a) return;
     try {
@@ -1239,6 +1246,126 @@ const INIT_SCRIPT: &str = r##"(function () {
     } catch (err) {}
   }, true);
   document.addEventListener('mouseup', function () { dragPending = null; }, true);
+  // Fullscreen zoom: like browser zoom, but only while the scanner is
+  // fullscreen. It opens at a size chosen to fill the screen, can be changed
+  // with the on-screen +/- control, Ctrl + / Ctrl - / Ctrl 0 or Ctrl + mouse
+  // wheel, remembers the last size you picked, and resets on leaving
+  // fullscreen.
+  var ZKEY = 'rdio-sherlock-fs-zoom';
+  var fsZoom = 1;
+  var zPill = null, zLabel = null, zTimer = null;
+  function webviewObj() {
+    try {
+      var t = window.__TAURI__;
+      return (t && t.webview && t.webview.getCurrentWebview) ? t.webview.getCurrentWebview() : null;
+    } catch (e) { return null; }
+  }
+  function pushZoom(z) {
+    var wv = webviewObj();
+    if (!wv) return;
+    try { var p = wv.setZoom(z); if (p && p.catch) p.catch(function () {}); } catch (e) {}
+  }
+  function autoZoom() {
+    var w = window.innerWidth * fsZoom, h = window.innerHeight * fsZoom;
+    var z = Math.min(w / 1000, h / 700);
+    return Math.max(1, Math.min(2.5, Math.round(z * 20) / 20));
+  }
+  function savedZoom() {
+    try {
+      var v = parseFloat(localStorage.getItem(ZKEY));
+      return (isFinite(v) && v >= 0.5 && v <= 3) ? v : null;
+    } catch (e) { return null; }
+  }
+  function setZoom(z, remember) {
+    z = Math.max(0.5, Math.min(3, Math.round(z * 20) / 20));
+    fsZoom = z;
+    pushZoom(z);
+    if (remember !== undefined) {
+      try {
+        if (remember) localStorage.setItem(ZKEY, String(z));
+        else localStorage.removeItem(ZKEY);
+      } catch (e) {}
+    }
+    updatePill();
+    showPill();
+  }
+  function buildPill() {
+    if (zPill) return;
+    var st = document.createElement('style');
+    st.textContent =
+      '#rdio-zoom-pill{position:fixed;right:18px;bottom:18px;z-index:2147483647;display:flex;align-items:center;gap:2px;padding:4px;border-radius:14px;background:rgba(28,33,44,.62);-webkit-backdrop-filter:blur(10px) saturate(140%);backdrop-filter:blur(10px) saturate(140%);color:#eef2f8;font:600 13px -apple-system,"Segoe UI",Roboto,sans-serif;opacity:0;transform:translateY(8px);pointer-events:none;transition:opacity .25s ease,transform .25s cubic-bezier(.2,.8,.2,1);user-select:none;-webkit-user-select:none;}' +
+      '#rdio-zoom-pill.show{opacity:1;transform:none;pointer-events:auto;}' +
+      '#rdio-zoom-pill button{width:34px;height:30px;border:none;border-radius:10px;background:transparent;color:inherit;font:inherit;font-size:18px;line-height:1;cursor:pointer;transition:background .15s ease,transform .1s ease;}' +
+      '#rdio-zoom-pill button:hover{background:rgba(255,255,255,.2);}' +
+      '#rdio-zoom-pill button:active{transform:scale(.88);}' +
+      '#rdio-zoom-pill button.lbl{width:auto;min-width:56px;padding:0 6px;font-size:13px;}';
+    zPill = document.createElement('div');
+    zPill.id = 'rdio-zoom-pill';
+    zPill.appendChild(st);
+    var minus = document.createElement('button');
+    minus.type = 'button'; minus.textContent = '−'; minus.title = 'Zoom out (Ctrl -)';
+    zLabel = document.createElement('button');
+    zLabel.type = 'button'; zLabel.className = 'lbl'; zLabel.title = 'Fit to screen (Ctrl 0)';
+    var plus = document.createElement('button');
+    plus.type = 'button'; plus.textContent = '+'; plus.title = 'Zoom in (Ctrl +)';
+    minus.addEventListener('click', function (e) { e.stopPropagation(); setZoom(fsZoom - 0.1, true); });
+    plus.addEventListener('click', function (e) { e.stopPropagation(); setZoom(fsZoom + 0.1, true); });
+    zLabel.addEventListener('click', function (e) { e.stopPropagation(); setZoom(autoZoomBase(), false); });
+    // clicks on the control must not reach the scanner (double-click leaves fullscreen)
+    ['dblclick', 'mousedown'].forEach(function (n) {
+      zPill.addEventListener(n, function (e) { e.stopPropagation(); }, true);
+    });
+    zPill.addEventListener('mouseenter', function () { if (zTimer) clearTimeout(zTimer); });
+    zPill.addEventListener('mouseleave', showPill);
+    zPill.appendChild(minus); zPill.appendChild(zLabel); zPill.appendChild(plus);
+  }
+  // "Fit" always computes from the true (unzoomed) screen size
+  function autoZoomBase() { return autoZoom(); }
+  function updatePill() {
+    if (zLabel) zLabel.textContent = Math.round(fsZoom * 100) + '%';
+    if (zPill) zPill.style.transformOrigin = 'bottom right';
+  }
+  function showPill() {
+    var host = document.fullscreenElement;
+    if (!host) return;
+    buildPill();
+    if (zPill.parentNode !== host) host.appendChild(zPill);
+    // keep the control a constant on-screen size whatever the zoom is
+    zPill.style.zoom = String(1 / fsZoom);
+    updatePill();
+    zPill.classList.add('show');
+    if (zTimer) clearTimeout(zTimer);
+    zTimer = setTimeout(function () { if (zPill) zPill.classList.remove('show'); }, 2500);
+  }
+  document.addEventListener('fullscreenchange', function () {
+    if (document.fullscreenElement) {
+      setTimeout(function () {
+        if (!document.fullscreenElement) return;
+        var s0 = savedZoom();
+        setZoom(s0 !== null ? s0 : autoZoom());
+      }, 300);
+    } else {
+      fsZoom = 1;
+      pushZoom(1);
+      if (zTimer) clearTimeout(zTimer);
+      if (zPill) { zPill.classList.remove('show'); if (zPill.parentNode) zPill.parentNode.removeChild(zPill); }
+    }
+  });
+  document.addEventListener('mousemove', function () { if (isFull()) showPill(); }, true);
+  document.addEventListener('keydown', function (e) {
+    if (!isFull() || !(e.ctrlKey || e.metaKey)) return;
+    var k = e.key;
+    if (k === '+' || k === '=') { setZoom(fsZoom + 0.1, true); }
+    else if (k === '-' || k === '_') { setZoom(fsZoom - 0.1, true); }
+    else if (k === '0') { setZoom(autoZoomBase(), false); }
+    else return;
+    e.preventDefault(); e.stopPropagation();
+  }, true);
+  document.addEventListener('wheel', function (e) {
+    if (!isFull() || !(e.ctrlKey || e.metaKey)) return;
+    e.preventDefault();
+    setZoom(fsZoom + (e.deltaY < 0 ? 0.1 : -0.1), true);
+  }, { capture: true, passive: false });
   // Live title: mirror the scanner display's current call in the window
   // title and the tray tooltip ("Rdio Sherlock — <talkgroup>"), back to
   // the plain name when idle. Reads the v6 display DOM (.rdio-display);
@@ -2218,6 +2345,9 @@ fn main() {
                         }
                     }
                     let _ = refresh_tray_menu(&h2);
+                });
+                app.listen("rdio-mini-state", move |ev| {
+                    MINI_ON.store(ev.payload().trim().trim_matches('"') == "true", Ordering::SeqCst);
                 });
                 app.listen("rdio-popup-hold", move |ev| {
                     if ev.payload().trim().trim_matches('"') == "true" {
