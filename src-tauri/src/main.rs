@@ -1107,25 +1107,25 @@ const INIT_SCRIPT: &str = r##"(function () {
       });
       var btns = document.createElement('div');
       btns.id = 'rdio-strip-btns';
-      btns.style.cssText = 'display:flex;align-items:center;gap:4px;padding:0 6px 0 5px;background:rgba(15,20,30,0.72);border-bottom-left-radius:10px;';
+      btns.style.cssText = 'display:flex;align-items:center;gap:6px;align-self:flex-start;margin:5px 10px 0 0;border-radius:12px;';
       if (!document.getElementById('rdio-strip-css')) {
         var css = document.createElement('style');
         css.id = 'rdio-strip-css';
         css.textContent =
           '@keyframes rdio-strip-in{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:none}}' +
           '@keyframes rdio-sb-pop{0%{box-shadow:0 0 0 0 rgba(255,255,255,.5)}100%{box-shadow:0 0 0 9px rgba(255,255,255,0)}}' +
-          '#rdio-strip-btns,#rdio-mini-btn{animation:rdio-strip-in .45s cubic-bezier(.2,.8,.2,1) both;-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);box-shadow:0 2px 10px rgba(0,0,0,.25);}' +
+          '#rdio-strip-btns,#rdio-mini-btn{animation:rdio-strip-in .45s cubic-bezier(.2,.8,.2,1) both;}' +
           '#rdio-mini-btn{animation-delay:.05s}' +
-          '.rdio-sb{position:relative;width:30px;height:22px;padding:0;border:none;border-radius:7px;background:rgba(255,255,255,.08);color:#dfe6f1;cursor:pointer;display:flex;align-items:center;justify-content:center;outline:none;transition:background .18s ease,color .18s ease,transform .2s cubic-bezier(.2,.8,.2,1),box-shadow .18s ease;}' +
-          '.rdio-sb svg{width:12px;height:12px;fill:none;stroke:currentColor;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round;overflow:visible;transition:transform .25s cubic-bezier(.2,.8,.2,1);}' +
-          '.rdio-sb:hover{background:rgba(255,255,255,.2);color:#fff;transform:translateY(-1px);box-shadow:0 3px 10px rgba(0,0,0,.4);}' +
+          '.rdio-sb{position:relative;width:40px;height:30px;padding:0;border:none;border-radius:11px;background:rgba(28,33,44,.55);-webkit-backdrop-filter:blur(10px) saturate(140%);backdrop-filter:blur(10px) saturate(140%);color:#eef2f8;cursor:pointer;display:flex;align-items:center;justify-content:center;outline:none;transition:background .18s ease,color .18s ease,transform .2s cubic-bezier(.2,.8,.2,1),box-shadow .18s ease;}' +
+          '.rdio-sb svg{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round;overflow:visible;transition:transform .25s cubic-bezier(.2,.8,.2,1);}' +
+          '.rdio-sb:hover{background:rgba(255,255,255,.26);color:#fff;transform:translateY(-1px);}' +
           '.rdio-sb:active{transform:scale(.86);transition-duration:.06s;}' +
           '.rdio-sb:focus-visible{box-shadow:0 0 0 2px rgba(120,180,255,.9);}' +
           '.rdio-sb.pop{animation:rdio-sb-pop .45s ease-out;}' +
           '.rdio-sb-min:hover svg{transform:translateY(3px);}' +
-          '.rdio-sb-close:hover{background:#e5484d;color:#fff;box-shadow:0 3px 12px rgba(229,72,77,.55);}' +
+          '.rdio-sb-close:hover{background:#e5484d;color:#fff;}' +
           '.rdio-sb-close:hover svg{transform:rotate(90deg) scale(1.1);}' +
-          '.rdio-sb-mini:hover{background:rgba(70,150,255,.85);box-shadow:0 3px 12px rgba(70,150,255,.5);}' +
+          '.rdio-sb-mini:hover{background:rgba(70,150,255,.9);color:#fff;}' +
           '.rdio-sb-mini .inner{fill:currentColor;stroke:none;transform-box:fill-box;transform-origin:100% 100%;transition:transform .25s cubic-bezier(.2,.8,.2,1);}' +
           '.rdio-sb-mini:hover .inner{transform:scale(.6) translate(-2px,-2px);}' +
           '.rdio-sb-mini:hover svg{transform:scale(1.12);}' +
@@ -1174,7 +1174,7 @@ const INIT_SCRIPT: &str = r##"(function () {
       }));
       var left = document.createElement('div');
       left.id = 'rdio-mini-btn';
-      left.style.cssText = 'display:flex;align-items:center;padding:0 5px 0 6px;background:rgba(15,20,30,0.72);border-bottom-right-radius:10px;';
+      left.style.cssText = 'display:flex;align-items:center;align-self:flex-start;margin:5px 0 0 10px;border-radius:12px;';
       left.appendChild(mkBtn('mini', 'Mini player', function () {
         if (window.__rdioMini) window.__rdioMini.toggle();
       }));
