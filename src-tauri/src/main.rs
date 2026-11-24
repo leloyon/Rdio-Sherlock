@@ -1613,10 +1613,11 @@ fn refresh_tray_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         let latest = UPDATE_LATEST.lock().ok().and_then(|g| g.clone()).unwrap_or_default();
         let (label, enabled) = match st {
             1 => ("Checking…".to_string(), false),
-            2 => ("Up to date — check again".to_string(), true),
+            2 => ("You're on the current build — check again".to_string(), true),
             3 => (format!("Install v{} now", latest.trim_start_matches('v')), true),
             4 => ("Installing…".to_string(), false),
-            5 => ("Couldn't check or install — try again".to_string(), true),
+            5 => ("Couldn't reach GitHub — check again".to_string(), true),
+            6 => (format!("Update failed — try v{} again", latest.trim_start_matches('v')), true),
             _ => ("Check for updates".to_string(), true),
         };
         let ver = MenuItem::with_id(app, "update_ver", format!("Version {}", env!("CARGO_PKG_VERSION")), false, None::<&str>)?;
@@ -1656,7 +1657,8 @@ fn refresh_tray_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
 // not overwritten) and relaunches.
 // ---------------------------------------------------------------------------
 const RELEASE_REPO: &str = "leloyon/Rdio-Sherlock";
-/// 0 unknown, 1 checking, 2 up to date, 3 update available, 4 installing, 5 error
+/// 0 unknown, 1 checking, 2 up to date, 3 update available, 4 installing,
+/// 5 could not check, 6 install failed
 static UPDATE_STATE: AtomicU32 = AtomicU32::new(0);
 static UPDATE_LATEST: Mutex<Option<String>> = Mutex::new(None);
 static AUTO_UPDATE: AtomicBool = AtomicBool::new(false);
@@ -1693,27 +1695,35 @@ fn run_ps(script: &str, envs: &[(&str, &str)]) -> Option<String> {
     Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
+/// Ok(Some(tag)) = latest release, Ok(None) = no releases published yet,
+/// Err = could not reach GitHub.
 #[cfg(windows)]
-fn fetch_latest_tag() -> Option<String> {
+fn fetch_latest_tag() -> Result<Option<String>, ()> {
     let script = format!(
-        "$ProgressPreference='SilentlyContinue';[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12;try{{$r=Invoke-RestMethod -Uri 'https://api.github.com/repos/{}/releases/latest' -Headers @{{'User-Agent'='RdioSherlock'}};Write-Output $r.tag_name}}catch{{Write-Output 'ERR'}}",
+        "$ProgressPreference='SilentlyContinue';[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12;try{{$r=Invoke-RestMethod -Uri 'https://api.github.com/repos/{}/releases/latest' -Headers @{{'User-Agent'='RdioSherlock'}};Write-Output $r.tag_name}}catch{{if($_.Exception.Response -and [int]$_.Exception.Response.StatusCode -eq 404){{Write-Output 'NONE'}}else{{Write-Output 'ERR'}}}}",
         RELEASE_REPO
     );
-    let out = run_ps(&script, &[])?;
-    let line = out.lines().last()?.trim().to_string();
-    if valid_tag(&line) { Some(line) } else { None }
+    let out = run_ps(&script, &[]).ok_or(())?;
+    let line = out.lines().last().ok_or(())?.trim().to_string();
+    if line == "NONE" {
+        Ok(None)
+    } else if valid_tag(&line) {
+        Ok(Some(line))
+    } else {
+        Err(())
+    }
 }
 
 #[cfg(not(windows))]
-fn fetch_latest_tag() -> Option<String> {
-    None
+fn fetch_latest_tag() -> Result<Option<String>, ()> {
+    Ok(None)
 }
 
 fn check_for_updates<R: Runtime>(app: &AppHandle<R>) {
     UPDATE_STATE.store(1, Ordering::SeqCst);
     let _ = refresh_tray_menu(app);
     match fetch_latest_tag() {
-        Some(tag) => {
+        Ok(Some(tag)) => {
             if is_newer(&tag, env!("CARGO_PKG_VERSION")) {
                 if let Ok(mut g) = UPDATE_LATEST.lock() {
                     *g = Some(tag);
@@ -1726,7 +1736,14 @@ fn check_for_updates<R: Runtime>(app: &AppHandle<R>) {
                 UPDATE_STATE.store(2, Ordering::SeqCst);
             }
         }
-        None => UPDATE_STATE.store(5, Ordering::SeqCst),
+        // no release published yet: nothing newer than this build
+        Ok(None) => {
+            if let Ok(mut g) = UPDATE_LATEST.lock() {
+                *g = None;
+            }
+            UPDATE_STATE.store(2, Ordering::SeqCst);
+        }
+        Err(()) => UPDATE_STATE.store(5, Ordering::SeqCst),
     }
     let _ = refresh_tray_menu(app);
 }
@@ -1750,7 +1767,7 @@ fn install_update<R: Runtime>(app: &AppHandle<R>) {
     #[cfg(windows)]
     {
         let fail = |app: &AppHandle<R>| {
-            UPDATE_STATE.store(5, Ordering::SeqCst);
+            UPDATE_STATE.store(6, Ordering::SeqCst);
             if let Some(w) = app.get_webview_window("main") {
                 let _ = w.eval(UPDATE_NOTICE_OFF_JS);
             }
@@ -1790,7 +1807,7 @@ fn install_update<R: Runtime>(app: &AppHandle<R>) {
     #[cfg(not(windows))]
     {
         let _ = tag;
-        UPDATE_STATE.store(5, Ordering::SeqCst);
+        UPDATE_STATE.store(6, Ordering::SeqCst);
         let _ = refresh_tray_menu(app);
     }
 }
@@ -2290,7 +2307,9 @@ fn main() {
                     "update_action" => {
                         let h = app.clone();
                         std::thread::spawn(move || {
-                            if UPDATE_STATE.load(Ordering::SeqCst) == 3 {
+                            let st = UPDATE_STATE.load(Ordering::SeqCst);
+                            let have = UPDATE_LATEST.lock().ok().map(|g| g.is_some()).unwrap_or(false);
+                            if st == 3 || (st == 6 && have) {
                                 install_update(&h);
                             } else {
                                 check_for_updates(&h);
