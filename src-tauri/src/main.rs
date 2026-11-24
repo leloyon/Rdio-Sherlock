@@ -1057,15 +1057,45 @@ const INIT_SCRIPT: &str = r##"(function () {
       drag.style.cssText = 'flex:1;';
       var btns = document.createElement('div');
       btns.id = 'rdio-strip-btns';
-      btns.style.cssText = 'display:flex;align-items:center;gap:4px;padding-right:6px;background:rgba(15,20,30,0.72);border-bottom-left-radius:8px;';
-      function mkBtn(label, title, fn) {
+      btns.style.cssText = 'display:flex;align-items:center;gap:4px;padding:0 6px 0 5px;background:rgba(15,20,30,0.72);border-bottom-left-radius:10px;';
+      if (!document.getElementById('rdio-strip-css')) {
+        var css = document.createElement('style');
+        css.id = 'rdio-strip-css';
+        css.textContent =
+          '@keyframes rdio-strip-in{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:none}}' +
+          '@keyframes rdio-sb-pop{0%{box-shadow:0 0 0 0 rgba(255,255,255,.5)}100%{box-shadow:0 0 0 9px rgba(255,255,255,0)}}' +
+          '#rdio-strip-btns,#rdio-mini-btn{animation:rdio-strip-in .45s cubic-bezier(.2,.8,.2,1) both;-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);box-shadow:0 2px 10px rgba(0,0,0,.25);}' +
+          '#rdio-mini-btn{animation-delay:.05s}' +
+          '.rdio-sb{position:relative;width:30px;height:22px;padding:0;border:none;border-radius:7px;background:rgba(255,255,255,.08);color:#dfe6f1;cursor:pointer;display:flex;align-items:center;justify-content:center;outline:none;transition:background .18s ease,color .18s ease,transform .2s cubic-bezier(.2,.8,.2,1),box-shadow .18s ease;}' +
+          '.rdio-sb svg{width:12px;height:12px;fill:none;stroke:currentColor;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round;overflow:visible;transition:transform .25s cubic-bezier(.2,.8,.2,1);}' +
+          '.rdio-sb:hover{background:rgba(255,255,255,.2);color:#fff;transform:translateY(-1px);box-shadow:0 3px 10px rgba(0,0,0,.4);}' +
+          '.rdio-sb:active{transform:scale(.86);transition-duration:.06s;}' +
+          '.rdio-sb:focus-visible{box-shadow:0 0 0 2px rgba(120,180,255,.9);}' +
+          '.rdio-sb.pop{animation:rdio-sb-pop .45s ease-out;}' +
+          '.rdio-sb-min:hover svg{transform:translateY(3px);}' +
+          '.rdio-sb-close:hover{background:#e5484d;color:#fff;box-shadow:0 3px 12px rgba(229,72,77,.55);}' +
+          '.rdio-sb-close:hover svg{transform:rotate(90deg) scale(1.1);}' +
+          '.rdio-sb-mini:hover{background:rgba(70,150,255,.85);box-shadow:0 3px 12px rgba(70,150,255,.5);}' +
+          '.rdio-sb-mini .inner{fill:currentColor;stroke:none;transform-box:fill-box;transform-origin:100% 100%;transition:transform .25s cubic-bezier(.2,.8,.2,1);}' +
+          '.rdio-sb-mini:hover .inner{transform:scale(.6) translate(-2px,-2px);}' +
+          '.rdio-sb-mini:hover svg{transform:scale(1.12);}' +
+          '@media (prefers-reduced-motion:reduce){.rdio-sb,.rdio-sb svg,.rdio-sb .inner{transition:none!important}#rdio-strip-btns,#rdio-mini-btn,.rdio-sb.pop{animation:none!important}}';
+        (document.head || root).appendChild(css);
+      }
+      var ICONS = {
+        min: '<svg viewBox="0 0 12 12"><path d="M2 9h8"/></svg>',
+        close: '<svg viewBox="0 0 12 12"><path d="M2.5 2.5l7 7M9.5 2.5l-7 7"/></svg>',
+        mini: '<svg viewBox="0 0 12 12"><rect x="1" y="1.5" width="10" height="9" rx="2"/><rect class="inner" x="6" y="6" width="4" height="3" rx="0.8"/></svg>'
+      };
+      function mkBtn(kind, title, fn) {
         var b = document.createElement('button');
         b.type = 'button';
-        b.textContent = label;
+        b.className = 'rdio-sb rdio-sb-' + kind;
+        b.innerHTML = ICONS[kind];
         b.title = title;
-        b.style.cssText = 'width:28px;height:22px;border:none;border-radius:5px;background:rgba(255,255,255,0.10);color:#ffffff;font-size:14px;line-height:1;cursor:pointer;';
         b.addEventListener('click', function (e) {
           e.preventDefault(); e.stopPropagation();
+          b.classList.remove('pop'); void b.offsetWidth; b.classList.add('pop');
           try {
             var r = fn();
             if (r && r.then) {
@@ -1086,16 +1116,16 @@ const INIT_SCRIPT: &str = r##"(function () {
         if (!a) return null;
         try { return fn(a.getCurrentWindow()); } catch (e) { return null; }
       }
-      btns.appendChild(mkBtn('−', 'Minimize', function () {
+      btns.appendChild(mkBtn('min', 'Minimize', function () {
         return withWin(function (w) { return w.minimize(); });
       }));
-      btns.appendChild(mkBtn('✕', 'Close (tucks into tray)', function () {
+      btns.appendChild(mkBtn('close', 'Close (tucks into tray)', function () {
         return withWin(function (w) { return w.close(); });
       }));
       var left = document.createElement('div');
       left.id = 'rdio-mini-btn';
-      left.style.cssText = 'display:flex;align-items:center;padding-left:6px;padding-right:4px;background:rgba(15,20,30,0.72);border-bottom-right-radius:8px;';
-      left.appendChild(mkBtn('\u29c9', 'Mini player', function () {
+      left.style.cssText = 'display:flex;align-items:center;padding:0 5px 0 6px;background:rgba(15,20,30,0.72);border-bottom-right-radius:10px;';
+      left.appendChild(mkBtn('mini', 'Mini player', function () {
         if (window.__rdioMini) window.__rdioMini.toggle();
       }));
       strip.appendChild(left);
