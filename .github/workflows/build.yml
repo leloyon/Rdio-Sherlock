@@ -2,6 +2,11 @@ name: Build Rdio Sherlock
 
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'Publish a release with this version (e.g. 1.1.1). Leave empty for a normal build.'
+        required: false
+        default: ''
   push:
     branches: ['**']
     tags: ['v*']
@@ -35,10 +40,15 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev
-      - name: Stamp version from tag
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Stamp version
+        if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.version != ''
         shell: bash
-        run: sed -i.bak "s/^version = \".*\"/version = \"${GITHUB_REF_NAME#v}\"/" src-tauri/Cargo.toml
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          V="${INPUT_VERSION:-${GITHUB_REF_NAME#v}}"
+          if ! [[ "$V" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then echo "Version must look like 1.1.1 (got '$V')"; exit 1; fi
+          sed -i.bak "s/^version = \".*\"/version = \"$V\"/" src-tauri/Cargo.toml
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -55,9 +65,10 @@ jobs:
           path: ${{ matrix.out }}
 
   release:
-    # Runs only for version tags (e.g. v1.1.0): attaches the three builds and
-    # a checksum file for the Windows exe, which the in-app updater verifies.
-    if: startsWith(github.ref, 'refs/tags/v')
+    # Runs for a version tag (e.g. v1.1.0) or when a version is typed into
+    # "Run workflow": publishes a release with the three builds and a
+    # checksum file for the Windows exe, which the in-app updater verifies.
+    if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.version != ''
     needs: build
     runs-on: ubuntu-latest
     steps:
@@ -74,5 +85,8 @@ jobs:
           sha256sum Rdio-Sherlock.exe | cut -d' ' -f1 > Rdio-Sherlock.exe.sha256
       - uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.event.inputs.version != '' && format('v{0}', github.event.inputs.version) || github.ref_name }}
+          target_commitish: ${{ github.sha }}
+          name: ${{ github.event.inputs.version != '' && format('Rdio Sherlock {0}', github.event.inputs.version) || github.ref_name }}
           files: out/*
           generate_release_notes: true
