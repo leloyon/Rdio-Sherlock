@@ -1100,6 +1100,11 @@ const INIT_SCRIPT: &str = r##"(function () {
       drag.setAttribute('data-tauri-drag-region', '');
       drag.title = 'Drag to move';
       drag.style.cssText = 'flex:1;';
+      // In fullscreen the top strip must not move the window.
+      document.addEventListener('fullscreenchange', function () {
+        if (document.fullscreenElement) drag.removeAttribute('data-tauri-drag-region');
+        else drag.setAttribute('data-tauri-drag-region', '');
+      });
       var btns = document.createElement('div');
       btns.id = 'rdio-strip-btns';
       btns.style.cssText = 'display:flex;align-items:center;gap:4px;padding:0 6px 0 5px;background:rgba(15,20,30,0.72);border-bottom-left-radius:10px;';
@@ -1209,9 +1214,10 @@ const INIT_SCRIPT: &str = r##"(function () {
     return !!(t && t.closest && t.closest('#rdio-top-strip'));
   }
   var dragPending = null;
+  function isFull() { return !!document.fullscreenElement; }
   document.addEventListener('mousedown', function (e) {
     if (e.button !== 0) return;
-    if (isInteractiveTarget(e.target) || inStrip(e.target)) return;
+    if (isInteractiveTarget(e.target) || (inStrip(e.target) && !isFull())) return;
     dragPending = { x: e.clientX, y: e.clientY };
   }, true);
   document.addEventListener('mousemove', function (e) {
@@ -1220,6 +1226,11 @@ const INIT_SCRIPT: &str = r##"(function () {
     var dy = e.clientY - dragPending.y;
     if (dx * dx + dy * dy < 16) return;
     dragPending = null;
+    // Fullscreen: dragging leaves fullscreen instead of moving the window.
+    if (isFull()) {
+      try { document.exitFullscreen(); } catch (err) {}
+      return;
+    }
     var a = api();
     if (!a) return;
     try {
