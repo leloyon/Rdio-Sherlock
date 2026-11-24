@@ -59,6 +59,16 @@ Drag/resize to your liking. Double-clicking the main display in rdio-scanner wil
 
 This application uses the same layout as a typical rdio-scanner server would if you typed it into the web browser. Be sure to check out **my Rdio-Scanner fork** for some themes, statistics page, and various QoL Features. - [here](https://github.com/leloyon/rdio-scanner).
 
+### Windows may warn you the first time
+
+Rdio Sherlock isn't code-signed (that costs money and I'm not going to pay for it), so Windows SmartScreen may show **"Windows protected your PC"** when you first run it. To continue, click **More info**, then **Run anyway**.
+
+You don't have to take my word that it's safe:
+
+- The full source is in this repository, so you can read exactly what it does. It only connects to the server you enter and, for updates, to this repository's releases on GitHub
+- Each release includes a `.sha256` file. To check your download, run `certutil -hashfile Rdio-Sherlock.exe SHA256` in a command prompt and compare the result with the number in that file
+- You can also build it yourself, see below
+
 ### A note on sleep
 
 The app keeps playing when the **screen** turns off or the window is hidden — that's what it's for. Nothing can play while the PC itself is **asleep**, though: if you listen for long stretches, set Windows Sleep to *Never* (the display can still turn off freely).
