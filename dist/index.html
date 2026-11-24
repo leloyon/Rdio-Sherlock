@@ -35,6 +35,7 @@
     background: #238636; color: #fff; border: none; border-radius: 8px; cursor: pointer;
   }
   button.primary:hover { background: #2ea043; }
+  button.primary:disabled { background: #2b3138; color: #9aa7b4; cursor: default; }
   .row { display: flex; gap: 10px; margin-top: 12px; }
   button.ghost {
     flex: 1; padding: 9px; font-size: 13px;
@@ -100,7 +101,10 @@
       <div class="hint">If the server uses an unlock code, entering it here signs you in automatically.</div>
 
       <div class="err" id="err"></div>
-      <button type="submit" class="primary">Connect</button>
+      <button type="submit" class="primary" id="connect-btn">Connect</button>
+      <div class="row">
+        <button type="button" class="ghost hidden" id="anyway-btn">Server is offline right now? Save it and keep trying</button>
+      </div>
     </form>
   </div>
 
@@ -170,11 +174,7 @@
       var rm = document.createElement('button');
       rm.type = 'button'; rm.className = 'rm'; rm.textContent = '\u2715';
       rm.title = 'Remove this server';
-      function connect() {
-        save({ server: x.server, code: x.code || '' });
-        go_(x.server, x.code || '');
-      }
-      go.addEventListener('click', connect);
+      go.addEventListener('click', function () { attempt(x.server, x.code || ''); });
       name.addEventListener('click', function () {
         serverInput.value = x.server;
         codeInput.value = x.code || '';
@@ -211,7 +211,6 @@
     return v.replace(/\/+$/, '');
   }
 
-  function go_(server, code) { go(server, code); }
   function go(server, code) {
     var b64 = '';
     if (code) {
@@ -245,18 +244,58 @@
     });
   }
 
+  // Check that the server answers before leaving this page, so a typo shows
+  // an error here instead of a browser "can't reach this page" screen.
+  var connectBtn = document.getElementById('connect-btn');
+  var anywayBtn = document.getElementById('anyway-btn');
+  var busy = false;
+  var lastTry = null;
+  function attempt(server, code) {
+    if (busy) return;
+    busy = true;
+    connectBtn.disabled = true;
+    connectBtn.textContent = 'Checking\u2026';
+    errEl.textContent = '';
+    anywayBtn.classList.add('hidden');
+    reachable(server, function (ok) {
+      busy = false;
+      connectBtn.disabled = false;
+      connectBtn.textContent = 'Connect';
+      if (ok) {
+        save({ server: server, code: code });
+        upsert(server, code);
+        go(server, code);
+      } else {
+        lastTry = { server: server, code: code };
+        errEl.textContent = 'Couldn\u2019t reach ' + server + '. Check the address and that the server is running, then try again.';
+        anywayBtn.classList.remove('hidden');
+      }
+    });
+  }
+
   form.addEventListener('submit', function (e) {
     e.preventDefault();
     var server = normalizeServer(serverInput.value);
     if (!server) {
       errEl.textContent = 'That server address doesn\u2019t look right. Check it and try again.';
+      anywayBtn.classList.add('hidden');
       return;
     }
+    attempt(server, codeInput.value || '');
+  });
+
+  // For a server that really is just offline: remember it and keep
+  // retrying every 30 seconds, like the app does at start-up.
+  anywayBtn.addEventListener('click', function () {
+    if (!lastTry) return;
+    save(lastTry);
+    upsert(lastTry.server, lastTry.code);
     errEl.textContent = '';
-    var code = codeInput.value || '';
-    save({ server: server, code: code });
-    upsert(server, code);
-    go(server, code);
+    anywayBtn.classList.add('hidden');
+    document.getElementById('connecting-server').textContent = lastTry.server;
+    form.classList.add('hidden');
+    connecting.classList.remove('hidden');
+    connectWhenReady(lastTry.server, lastTry.code);
   });
 
   document.getElementById('change-btn').addEventListener('click', function () {
