@@ -2211,6 +2211,9 @@ fn main() {
             )
             .title("Rdio Sherlock")
             .decorations(false)
+            // dark window/page background (same as the scanner's), so no
+            // white shows while the window resizes or the page is repainted
+            .background_color(tauri::window::Color(30, 30, 30, 255))
             .initialization_script(INIT_SCRIPT)
             .initialization_script(AUDIO_SCRIPT)
             .initialization_script(MINI_SCRIPT)
