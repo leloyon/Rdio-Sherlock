@@ -107,11 +107,42 @@ fn parse_quiet(text: &str) -> Option<(u32, u32)> {
     if s == e { None } else { Some((s, e)) }
 }
 
+/// The setting in quiet_hours.txt is its first line that is not blank and
+/// does not start with '#' (those lines are instructions for the person
+/// editing the file).
+fn first_setting_line(text: &str) -> String {
+    text.lines()
+        .map(|l| l.trim())
+        .find(|l| !l.is_empty() && !l.starts_with('#'))
+        .unwrap_or("off")
+        .to_string()
+}
+
 fn quiet_text<R: Runtime>(app: &AppHandle<R>) -> String {
     flag_path(app, "quiet_hours.txt")
         .and_then(|p| std::fs::read_to_string(p).ok())
-        .map(|t| t.trim().to_string())
+        .map(|t| first_setting_line(&t))
         .unwrap_or_else(|| "off".to_string())
+}
+
+const QUIET_TEMPLATE: &str = "# Quiet hours. Replace \"off\" below with a start-end time in 24-hour\r\n# format, for example 22:00-06:00, then save this file. Write off to turn\r\n# them off again.\r\noff\r\n";
+
+#[cfg(test)]
+mod quiet_tests {
+    use super::*;
+    #[test]
+    fn setting_line_skips_comments_and_blanks() {
+        assert_eq!(first_setting_line("# note\r\n\r\noff\r\n"), "off");
+        assert_eq!(first_setting_line("# note\n22:00-06:00\n"), "22:00-06:00");
+        assert_eq!(first_setting_line("22:00-06:00"), "22:00-06:00");
+        assert_eq!(first_setting_line("# only comments\n"), "off");
+        assert_eq!(first_setting_line(""), "off");
+    }
+    #[test]
+    fn template_means_off() {
+        assert_eq!(parse_quiet(&first_setting_line(QUIET_TEMPLATE)), None);
+        assert_eq!(parse_quiet(&first_setting_line("# x\n23:00-07:00")), Some((23 * 60, 7 * 60)));
+    }
 }
 
 fn reload_quiet<R: Runtime>(app: &AppHandle<R>) {
@@ -2294,10 +2325,16 @@ fn main() {
                         let _ = refresh_tray_menu(app);
                     }
                     "quiet_custom" => {
-                        if parse_quiet(&quiet_text(app)).is_none() {
-                            set_quiet_text(app, "22:00-06:00");
-                        }
+                        // Opening the file must not switch quiet hours on:
+                        // when they are off, it opens with instructions and
+                        // "off", and they start only once times are typed in.
                         if let Some(path) = flag_path(app, "quiet_hours.txt") {
+                            if quiet_text(app) == "off" {
+                                if let Some(dir) = path.parent() {
+                                    let _ = std::fs::create_dir_all(dir);
+                                }
+                                let _ = std::fs::write(&path, QUIET_TEMPLATE);
+                            }
                             let _ = Command::new("notepad").arg(path).spawn();
                         }
                         let _ = refresh_tray_menu(app);
